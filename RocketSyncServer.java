@@ -108,6 +108,9 @@ public class RocketSyncServer {
 					return;
 				}
 				switch (method + " " + path) {
+					case "POST /api/register" -> register(ex);
+					case "POST /api/login" -> login(ex);
+					case "POST /api/me" -> me(ex);
 					case "POST /api/activate" -> activate(ex);
 					case "POST /api/check" -> check(ex);
 					case "GET /api/download" -> download(ex);
@@ -230,6 +233,13 @@ public class RocketSyncServer {
 			s.execute("CREATE TABLE IF NOT EXISTS rv_versions ("
 					+ "version VARCHAR(32) PRIMARY KEY, uploaded BIGINT NOT NULL, notes VARCHAR(2000),"
 					+ " sha256 VARCHAR(64) NOT NULL, size INT NOT NULL, data BYTEA NOT NULL)");
+			// аккаунты установщика: ник + пароль (хранится только хэш)
+			s.execute("CREATE TABLE IF NOT EXISTS rv_users ("
+					+ "nick_key VARCHAR(32) PRIMARY KEY, nick VARCHAR(32) NOT NULL, salt VARCHAR(64) NOT NULL,"
+					+ " hash VARCHAR(128) NOT NULL, created BIGINT NOT NULL)");
+			s.execute("CREATE TABLE IF NOT EXISTS rv_sessions ("
+					+ "token VARCHAR(64) PRIMARY KEY, nick_key VARCHAR(32) NOT NULL, created BIGINT NOT NULL)");
+			s.execute("ALTER TABLE rv_keys ADD COLUMN IF NOT EXISTS nick VARCHAR(32)");
 		}
 	}
 
@@ -243,6 +253,118 @@ public class RocketSyncServer {
 		}
 		send(ex, 503, "application/json", "{\"ok\":false,\"error\":\"На сервере не настроена база (DATABASE_URL)\"}");
 		return false;
+	}
+
+	// ======================== аккаунты ========================
+
+	private static final Pattern NICK_RE = Pattern.compile("^[A-Za-z0-9_]{3,16}$");
+
+	private static void register(HttpExchange ex) throws IOException, SQLException {
+		if (tooManyAttempts(ex)) {
+			send(ex, 429, "application/json", error("Слишком много попыток, подожди минуту"));
+			return;
+		}
+		Map<String, String> f = form(ex);
+		String nick = f.getOrDefault("nick", "").trim();
+		String password = f.getOrDefault("password", "");
+		if (!NICK_RE.matcher(nick).matches()) {
+			send(ex, 400, "application/json", error("Ник: 3–16 символов, английские буквы, цифры и _"));
+			return;
+		}
+		if (password.length() < 6 || password.length() > 100) {
+			send(ex, 400, "application/json", error("Пароль: минимум 6 символов"));
+			return;
+		}
+		try (Connection c = db()) {
+			if (userExists(c, nick)) {
+				send(ex, 409, "application/json", error("Такой ник уже занят"));
+				return;
+			}
+			byte[] salt = new byte[16];
+			RANDOM.nextBytes(salt);
+			update(c, "INSERT INTO rv_users (nick_key, nick, salt, hash, created) VALUES (?, ?, ?, ?, ?)",
+					nick.toLowerCase(Locale.ROOT), nick, HexFormat.of().formatHex(salt), hashPassword(password, salt),
+					System.currentTimeMillis());
+			sendSession(ex, c, nick);
+		}
+	}
+
+	private static void login(HttpExchange ex) throws IOException, SQLException {
+		if (tooManyAttempts(ex)) {
+			send(ex, 429, "application/json", error("Слишком много попыток, подожди минуту"));
+			return;
+		}
+		Map<String, String> f = form(ex);
+		String nickKey = f.getOrDefault("nick", "").trim().toLowerCase(Locale.ROOT);
+		String password = f.getOrDefault("password", "");
+		try (Connection c = db()) {
+			try (PreparedStatement st = c.prepareStatement("SELECT nick, salt, hash FROM rv_users WHERE nick_key=?")) {
+				st.setString(1, nickKey);
+				try (ResultSet rs = st.executeQuery()) {
+					if (rs.next()) {
+						String hash = hashPassword(password, HexFormat.of().parseHex(rs.getString(2)));
+						if (MessageDigest.isEqual(hash.getBytes(StandardCharsets.UTF_8), rs.getString(3).getBytes(StandardCharsets.UTF_8))) {
+							sendSession(ex, c, rs.getString(1));
+							return;
+						}
+					}
+				}
+			}
+			send(ex, 401, "application/json", error("Неверный ник или пароль"));
+		}
+	}
+
+	/** Кто вошёл по этому токену. */
+	private static void me(HttpExchange ex) throws IOException, SQLException {
+		try (Connection c = db()) {
+			String nick = nickByToken(c, form(ex).get("token"));
+			if (nick == null) {
+				send(ex, 401, "application/json", error("Нужно войти заново"));
+				return;
+			}
+			send(ex, 200, "application/json", "{\"ok\":true,\"nick\":" + quote(nick) + "}");
+		}
+	}
+
+	private static void sendSession(HttpExchange ex, Connection c, String nick) throws IOException, SQLException {
+		byte[] raw = new byte[24];
+		RANDOM.nextBytes(raw);
+		String token = HexFormat.of().formatHex(raw);
+		update(c, "INSERT INTO rv_sessions (token, nick_key, created) VALUES (?, ?, ?)",
+				token, nick.toLowerCase(Locale.ROOT), System.currentTimeMillis());
+		send(ex, 200, "application/json", "{\"ok\":true,\"nick\":" + quote(nick) + ",\"token\":" + quote(token) + "}");
+	}
+
+	private static boolean userExists(Connection c, String nick) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement("SELECT 1 FROM rv_users WHERE nick_key=?")) {
+			st.setString(1, nick.toLowerCase(Locale.ROOT));
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next();
+			}
+		}
+	}
+
+	private static String nickByToken(Connection c, String token) throws SQLException {
+		if (token == null || !token.matches("^[a-f0-9]{48}$")) {
+			return null;
+		}
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT u.nick FROM rv_sessions s JOIN rv_users u ON u.nick_key = s.nick_key WHERE s.token=?")) {
+			st.setString(1, token);
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getString(1) : null;
+			}
+		}
+	}
+
+	private static String hashPassword(String password, byte[] salt) {
+		try {
+			var spec = new javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt, 120_000, 256);
+			byte[] hash = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+			return HexFormat.of().formatHex(hash);
+		} catch (java.security.GeneralSecurityException e) {
+			throw new IllegalStateException(e);
+		}
 	}
 
 	// ======================== ключи для игроков ========================
@@ -260,6 +382,11 @@ public class RocketSyncServer {
 			return;
 		}
 		try (Connection c = db()) {
+			String nick = nickByToken(c, form.get("token"));
+			if (nick == null) {
+				send(ex, 401, "application/json", error("Нужно войти в аккаунт"));
+				return;
+			}
 			Map<String, Object> key = findKey(c, code);
 			if (key == null) {
 				send(ex, 404, "application/json", error("Такого ключа нет"));
@@ -267,6 +394,14 @@ public class RocketSyncServer {
 			}
 			if ((Boolean) key.get("disabled")) {
 				send(ex, 403, "application/json", error("Ключ отключён"));
+				return;
+			}
+			if (key.get("nick") == null) {
+				update(c, "UPDATE rv_keys SET nick=? WHERE code=? AND nick IS NULL", nick, code);
+				key = findKey(c, code);
+			}
+			if (!nick.equalsIgnoreCase((String) key.get("nick"))) {
+				send(ex, 403, "application/json", error("Этот ключ уже привязан к другому аккаунту"));
 				return;
 			}
 			long now = System.currentTimeMillis();
@@ -369,7 +504,7 @@ public class RocketSyncServer {
 
 	private static Map<String, Object> findKey(Connection c, String code) throws SQLException {
 		try (PreparedStatement st = c.prepareStatement(
-				"SELECT code, days, note, created, activated, expires, device, disabled, last_seen FROM rv_keys WHERE code=?")) {
+				"SELECT code, days, note, created, activated, expires, device, disabled, last_seen, nick FROM rv_keys WHERE code=?")) {
 			st.setString(1, code);
 			try (ResultSet rs = st.executeQuery()) {
 				return rs.next() ? keyRow(rs) : null;
@@ -391,6 +526,7 @@ public class RocketSyncServer {
 		row.put("disabled", rs.getBoolean(8));
 		long seen = rs.getLong(9);
 		row.put("lastSeen", rs.wasNull() ? null : seen);
+		row.put("nick", rs.getString(10));
 		return row;
 	}
 
@@ -439,7 +575,7 @@ public class RocketSyncServer {
 				case "GET keys" -> {
 					StringBuilder json = new StringBuilder("[");
 					try (PreparedStatement st = c.prepareStatement(
-							"SELECT code, days, note, created, activated, expires, device, disabled, last_seen FROM rv_keys ORDER BY created DESC");
+							"SELECT code, days, note, created, activated, expires, device, disabled, last_seen, nick FROM rv_keys ORDER BY created DESC");
 					     ResultSet rs = st.executeQuery()) {
 						while (rs.next()) {
 							Map<String, Object> k = keyRow(rs);
@@ -454,7 +590,8 @@ public class RocketSyncServer {
 									.append(",\"expires\":").append(k.get("expires"))
 									.append(",\"bound\":").append(k.get("device") != null)
 									.append(",\"disabled\":").append(k.get("disabled"))
-									.append(",\"lastSeen\":").append(k.get("lastSeen")).append('}');
+									.append(",\"lastSeen\":").append(k.get("lastSeen"))
+									.append(",\"nick\":").append(quote((String) k.get("nick"))).append('}');
 						}
 					}
 					send(ex, 200, "application/json", json.append(']').toString());
