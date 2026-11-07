@@ -161,7 +161,7 @@
       <p class="muted" style="margin:-6px 0 14px">Аккаунты из установщика, у которых активирован ключ. Выключишь — у игрока мод отключится в течение минуты.</p>
       <div class="scroll">
         <table class="table">
-          <thead><tr><th>Мод</th><th>Ник</th><th>Ключ · заметка</th><th>Осталось</th><th>В сети</th><th></th></tr></thead>
+          <thead><tr><th>Мод</th><th>Ник</th><th>Ключ · заметка</th><th>Осталось</th><th>Дни</th><th>В сети</th><th></th></tr></thead>
           <tbody id="deviceRows"></tbody>
         </table>
       </div>
@@ -177,7 +177,7 @@
       </div>
       <div class="scroll">
         <table class="table">
-          <thead><tr><th>Ник</th><th>Зарегистрирован</th><th>Последний вход</th><th>Ключ</th><th>В сети</th><th>Пароль</th></tr></thead>
+          <thead><tr><th>Ник</th><th>Зарегистрирован</th><th>Последний вход</th><th>Ключ</th><th>Дни</th><th>В сети</th><th>Пароль</th></tr></thead>
           <tbody id="userRows"></tbody>
         </table>
       </div>
@@ -274,6 +274,18 @@ function seen(ms) {
   return '<span class="muted">' + when(ms) + '</span>';
 }
 
+/** Поле «дней» + кнопка. Минус — забрать дни. Без ключа кнопка выдаёт ключ на ник. */
+function daysBox(attr, noKey) {
+  return `<span class="add-days"><input type="number" placeholder="дней" title="Сколько дней добавить (минус — забрать)">
+    <button class="small" ${attr}>${noKey ? 'Выдать' : 'Добавить'}</button></span>`;
+}
+
+function readDays(btn) {
+  const v = btn.parentElement.querySelector('input').value.trim();
+  if (!/^-?\d+$/.test(v) || +v === 0) { toast('Впиши число дней, например 30 или -5'); return null; }
+  return v;
+}
+
 function renderDevices() {
   const now = Date.now();
   const rows = allKeys.filter(k => k.activated && (k.bound || k.nick))
@@ -286,10 +298,11 @@ function renderDevices() {
       <td><b>${esc(k.nick) || '<span class="muted">без аккаунта</span>'}</b></td>
       <td><span class="code" data-copy="${esc(k.code)}">${esc(k.code)}</span>${k.note ? '<div class="muted">' + esc(k.note) + '</div>' : ''}</td>
       <td>${left > 0 ? left + ' дн.' : '<span class="pill end">Истёк</span>'}</td>
+      <td>${daysBox('data-give-key="' + esc(k.code) + '"')}</td>
       <td>${seen(k.lastSeen)}</td>
       <td>${k.bound ? `<button class="small" data-unbind="${esc(k.code)}" title="Игрок сменил компьютер">Отвязать ПК</button>` : ''}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="6" class="muted">Пока никто не активировал ключ</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="muted">Пока никто не активировал ключ</td></tr>';
 }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -366,10 +379,11 @@ function renderUsers() {
       <td class="muted">${when(u.created)}</td>
       <td class="muted">${when(u.lastLogin)}</td>
       <td>${key}</td>
+      <td>${daysBox('data-give-nick="' + esc(u.nick) + '"', !k)}</td>
       <td>${seen(lastSeen)}</td>
       <td><button class="small" data-reset="${esc(u.nick)}" title="Пароли хранятся зашифрованно, их нельзя посмотреть — можно выдать новый">Сбросить пароль</button></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="6" class="muted">Пока никто не зарегистрировался</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="muted">Пока никто не зарегистрировался</td></tr>';
 
   const day = 86400000;
   $('userStats').innerHTML = `
@@ -418,6 +432,16 @@ $('userSearch').oninput = renderUsers;
 $('userRows').onclick = async e => {
   const copy = e.target.closest('[data-copy]');
   if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован')); return; }
+  const g = e.target.closest('[data-give-nick]');
+  if (g) {
+    const days = readDays(g); if (days === null) return;
+    try {
+      await api('POST', 'users/give', { nick: g.dataset.giveNick, days });
+      toast(g.dataset.giveNick + ': ' + (days > 0 ? '+' : '') + days + ' дн.');
+      await loadUsers();
+    } catch (err) { toast(err.message); }
+    return;
+  }
   const r = e.target.closest('[data-reset]');
   if (!r) return;
   const nick = r.dataset.reset;
@@ -472,6 +496,13 @@ $('keyRows').onclick = async e => {
 $('deviceRows').onclick = async e => {
   const copy = e.target.closest('[data-copy]');
   if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован')); return; }
+  const g = e.target.closest('[data-give-key]');
+  if (g) {
+    const days = readDays(g); if (days === null) return;
+    try { await api('POST', 'extend', { key: g.dataset.giveKey, days }); toast((days > 0 ? '+' : '') + days + ' дн.'); await loadKeys(); renderDevices(); }
+    catch (err) { toast(err.message); }
+    return;
+  }
   try {
     const t = e.target.closest('[data-toggle]');
     if (t) {

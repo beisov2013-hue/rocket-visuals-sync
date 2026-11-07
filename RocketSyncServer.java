@@ -359,7 +359,33 @@ public class RocketSyncServer {
 				send(ex, 401, "application/json", error("Нужно войти заново"));
 				return;
 			}
-			send(ex, 200, "application/json", "{\"ok\":true,\"nick\":" + quote(nick) + "}");
+			// ключ, выданный на этот ник из панели, — установщик подставит его сам
+			String key = keyOfNick(c, nick);
+			send(ex, 200, "application/json", "{\"ok\":true,\"nick\":" + quote(nick) + ",\"key\":" + quote(key) + "}");
+		}
+	}
+
+	/** Последний ключ, привязанный к нику (или null). */
+	private static String keyOfNick(Connection c, String nick) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT code FROM rv_keys WHERE LOWER(nick)=? ORDER BY created DESC LIMIT 1")) {
+			st.setString(1, nick.toLowerCase(Locale.ROOT));
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getString(1) : null;
+			}
+		}
+	}
+
+	/** Добавить (или забрать, если days < 0) дни ключу. */
+	private static void extendKey(Connection c, Map<String, Object> k, int days) throws SQLException {
+		String code = (String) k.get("code");
+		if (k.get("activated") == null) {
+			// ещё не активирован — меняем срок ключа
+			update(c, "UPDATE rv_keys SET days=GREATEST(1, days+?) WHERE code=?", days, code);
+		} else {
+			// продлеваем от сегодня, если срок уже прошёл, иначе от конца срока
+			long base = Math.max((Long) k.get("expires"), System.currentTimeMillis());
+			update(c, "UPDATE rv_keys SET expires=? WHERE code=?", base + days * DAY_MS, code);
 		}
 	}
 
@@ -661,15 +687,42 @@ public class RocketSyncServer {
 						send(ex, 404, "application/json", error("Ключ не найден"));
 						return;
 					}
-					if (k.get("activated") == null) {
-						// ещё не активирован — просто добавляем дни к сроку ключа
-						update(c, "UPDATE rv_keys SET days=GREATEST(1, days+?) WHERE code=?", days, code);
-					} else {
-						// продлеваем от сегодня, если срок уже прошёл, иначе от конца срока
-						long base = Math.max((Long) k.get("expires"), System.currentTimeMillis());
-						update(c, "UPDATE rv_keys SET expires=? WHERE code=?", base + days * DAY_MS, code);
-					}
+					extendKey(c, k, days);
 					send(ex, 200, "application/json", "{\"ok\":true}");
+				}
+				case "POST users/give" -> {
+					// выдать (или забрать) дни игроку по нику: есть ключ — продлеваем, нет — создаём ключ на его ник
+					Map<String, String> f = form(ex);
+					String nickKey = f.getOrDefault("nick", "").trim().toLowerCase(Locale.ROOT);
+					int days = clamp(parseInt(f.get("days"), 0), -3650, 3650);
+					if (!userExists(c, nickKey)) {
+						send(ex, 404, "application/json", error("Нет такого аккаунта"));
+						return;
+					}
+					if (days == 0) {
+						send(ex, 400, "application/json", error("Впиши число дней"));
+						return;
+					}
+					String code = keyOfNick(c, nickKey);
+					if (code != null) {
+						extendKey(c, findKey(c, code), days);
+					} else if (days > 0) {
+						String nick;
+						try (PreparedStatement st = c.prepareStatement("SELECT nick FROM rv_users WHERE nick_key=?")) {
+							st.setString(1, nickKey);
+							try (ResultSet rs = st.executeQuery()) {
+								rs.next();
+								nick = rs.getString(1);
+							}
+						}
+						code = newKey();
+						update(c, "INSERT INTO rv_keys (code, days, note, created, disabled, nick) VALUES (?, ?, ?, ?, FALSE, ?)",
+								code, days, "выдан из панели", System.currentTimeMillis(), nick);
+					} else {
+						send(ex, 400, "application/json", error("У игрока нет ключа — забирать нечего"));
+						return;
+					}
+					send(ex, 200, "application/json", "{\"ok\":true,\"key\":" + quote(code) + "}");
 				}
 				case "POST disable", "POST enable" -> {
 					String code = normalizeKey(form(ex).get("key"));
