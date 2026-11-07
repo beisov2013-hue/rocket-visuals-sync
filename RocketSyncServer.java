@@ -651,6 +651,44 @@ public class RocketSyncServer {
 					update(c, "DELETE FROM rv_keys WHERE code=?", code);
 					send(ex, 200, "application/json", "{\"ok\":true}");
 				}
+				case "GET users" -> {
+					// все аккаунты установщика: когда зарегистрировался, когда последний раз входил, какие ключи
+					Map<String, StringBuilder> keysByNick = new HashMap<>();
+					try (PreparedStatement st = c.prepareStatement(
+							"SELECT LOWER(nick), code, note, expires, disabled, last_seen FROM rv_keys WHERE nick IS NOT NULL ORDER BY activated DESC");
+					     ResultSet rs = st.executeQuery()) {
+						while (rs.next()) {
+							StringBuilder list = keysByNick.computeIfAbsent(rs.getString(1), k -> new StringBuilder());
+							if (!list.isEmpty()) {
+								list.append(',');
+							}
+							long seen = rs.getLong(6);
+							list.append("{\"code\":").append(quote(rs.getString(2)))
+									.append(",\"note\":").append(quote(rs.getString(3)))
+									.append(",\"expires\":").append(rs.getLong(4))
+									.append(",\"disabled\":").append(rs.getBoolean(5))
+									.append(",\"lastSeen\":").append(rs.wasNull() ? "null" : String.valueOf(seen)).append('}');
+						}
+					}
+					StringBuilder json = new StringBuilder("[");
+					try (PreparedStatement st = c.prepareStatement(
+							"SELECT u.nick_key, u.nick, u.created, (SELECT MAX(s.created) FROM rv_sessions s WHERE s.nick_key = u.nick_key)"
+									+ " FROM rv_users u ORDER BY u.created DESC");
+					     ResultSet rs = st.executeQuery()) {
+						while (rs.next()) {
+							if (json.length() > 1) {
+								json.append(',');
+							}
+							long login = rs.getLong(4);
+							StringBuilder keys = keysByNick.get(rs.getString(1));
+							json.append("{\"nick\":").append(quote(rs.getString(2)))
+									.append(",\"created\":").append(rs.getLong(3))
+									.append(",\"lastLogin\":").append(rs.wasNull() ? "null" : String.valueOf(login))
+									.append(",\"keys\":[").append(keys == null ? "" : keys).append("]}");
+						}
+					}
+					send(ex, 200, "application/json", json.append(']').toString());
+				}
 				case "GET versions" -> {
 					StringBuilder json = new StringBuilder("[");
 					try (PreparedStatement st = c.prepareStatement(

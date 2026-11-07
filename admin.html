@@ -112,6 +112,7 @@
     <div class="tabs hidden" id="tabs">
       <button class="tab on" data-tab="keys">Ключи</button>
       <button class="tab" data-tab="devices">Игроки</button>
+      <button class="tab" data-tab="users">Регистрации</button>
       <button class="tab" data-tab="versions">Версии мода</button>
       <button class="tab" id="logout">Выйти</button>
     </div>
@@ -162,6 +163,22 @@
         <table class="table">
           <thead><tr><th>Мод</th><th>Ник</th><th>Ключ · заметка</th><th>Осталось</th><th>В сети</th><th></th></tr></thead>
           <tbody id="deviceRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="users" class="hidden">
+    <div class="stats" id="userStats"></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">Кто зарегистрирован в установщике</h2>
+        <input id="userSearch" placeholder="Поиск по нику" style="width:200px">
+      </div>
+      <div class="scroll">
+        <table class="table">
+          <thead><tr><th>Ник</th><th>Зарегистрирован</th><th>Последний вход</th><th>Ключ</th><th>В сети</th></tr></thead>
+          <tbody id="userRows"></tbody>
         </table>
       </div>
     </div>
@@ -321,10 +338,48 @@ async function loadVersions() {
     </tr>`).join('') || '<tr><td colspan="5" class="muted">Версий пока нет — загрузи .jar мода</td></tr>';
 }
 
+let allUsers = [];
+
+async function loadUsers() { allUsers = await api('GET', 'users'); renderUsers(); }
+
+function renderUsers() {
+  const q = $('userSearch').value.trim().toLowerCase();
+  const now = Date.now();
+  const rows = allUsers.filter(u => !q || u.nick.toLowerCase().includes(q));
+  $('userRows').innerHTML = rows.map(u => {
+    const k = u.keys[0];
+    let key = '<span class="muted">нет ключа</span>';
+    if (k) {
+      const left = Math.ceil((k.expires - now) / 86400000);
+      const state = k.disabled ? '<span class="pill off">Отключён</span>'
+        : left > 0 ? `<span class="pill on">${left} дн.</span>` : '<span class="pill end">Истёк</span>';
+      key = `<span class="code" data-copy="${esc(k.code)}">${esc(k.code)}</span> ${state}`
+        + (k.note ? '<div class="muted">' + esc(k.note) + '</div>' : '')
+        + (u.keys.length > 1 ? `<div class="muted">ещё ключей: ${u.keys.length - 1}</div>` : '');
+    }
+    const lastSeen = Math.max(0, ...u.keys.map(x => x.lastSeen || 0)) || null;
+    return `
+    <tr>
+      <td><b>${esc(u.nick)}</b></td>
+      <td class="muted">${when(u.created)}</td>
+      <td class="muted">${when(u.lastLogin)}</td>
+      <td>${key}</td>
+      <td>${seen(lastSeen)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="muted">Пока никто не зарегистрировался</td></tr>';
+
+  const day = 86400000;
+  $('userStats').innerHTML = `
+    <div class="stat"><span class="muted">Всего аккаунтов</span><b>${allUsers.length}</b></div>
+    <div class="stat"><span class="muted">С ключом</span><b>${allUsers.filter(u => u.keys.length).length}</b></div>
+    <div class="stat"><span class="muted">Без ключа</span><b>${allUsers.filter(u => !u.keys.length).length}</b></div>
+    <div class="stat"><span class="muted">Новые за сутки</span><b>${allUsers.filter(u => now - u.created < day).length}</b></div>`;
+}
+
 function showTab(name) {
   document.querySelectorAll('.tab[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['keys', 'devices', 'versions'].forEach(s => $(s).classList.toggle('hidden', name !== s));
-  const load = name === 'versions' ? loadVersions() : loadKeys().then(renderDevices);
+  ['keys', 'devices', 'users', 'versions'].forEach(s => $(s).classList.toggle('hidden', name !== s));
+  const load = name === 'versions' ? loadVersions() : name === 'users' ? loadUsers() : loadKeys().then(renderDevices);
   load.catch(e => toast(e.message));
 }
 
@@ -356,6 +411,11 @@ $('password').onkeydown = e => { if (e.key === 'Enter') login(); };
 $('logout').onclick = logout;
 document.querySelectorAll('.tab[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 $('search').oninput = renderKeys;
+$('userSearch').oninput = renderUsers;
+$('userRows').onclick = e => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован'));
+};
 
 $('create').onclick = async () => {
   try {
@@ -444,6 +504,7 @@ if (password) { $('password').value = password; login(); }
 setInterval(() => {
   if (!password || document.hidden) return;
   if (!$('devices').classList.contains('hidden')) loadKeys().then(renderDevices).catch(() => {});
+  else if (!$('users').classList.contains('hidden')) loadUsers().catch(() => {});
   else if (!$('keys').classList.contains('hidden')) loadKeys().catch(() => {});
 }, 30000);
 </script>
