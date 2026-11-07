@@ -74,6 +74,18 @@
   .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
   .stat { flex: 1 1 140px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
   .stat b { display: block; font-size: 22px; font-weight: 600; }
+  .add-days { display: inline-flex; gap: 4px; align-items: center; }
+  .add-days input { width: 58px; padding: 5px 8px; border-radius: 8px; font-size: 12px; }
+  .switch { position: relative; width: 40px; height: 22px; border-radius: 999px; background: #3a3a52; border: 0; padding: 0; cursor: pointer; transition: background .2s; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .2s; }
+  .switch.on { background: var(--ok); }
+  .switch.on::after { transform: translateX(18px); }
+  .switch:hover { background: #46465f; }
+  .switch.on:hover { background: #2fd36b; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(8, 8, 14, .7); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+  .modal { max-width: 380px; width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+  .modal p { margin: 0 0 18px; }
+  .modal .row { justify-content: flex-end; }
   @media (max-width: 640px) { .tabs { margin-left: 0; width: 100%; } header { flex-wrap: wrap; } }
 </style>
 </head>
@@ -99,6 +111,7 @@
     </div>
     <div class="tabs hidden" id="tabs">
       <button class="tab on" data-tab="keys">Ключи</button>
+      <button class="tab" data-tab="devices">Устройства</button>
       <button class="tab" data-tab="versions">Версии мода</button>
       <button class="tab" id="logout">Выйти</button>
     </div>
@@ -141,6 +154,19 @@
     </div>
   </section>
 
+  <section id="devices" class="hidden">
+    <div class="card">
+      <h2>Устройства с модом</h2>
+      <p class="muted" style="margin:-6px 0 14px">Компьютеры, на которых активирован ключ. Выключишь — у игрока мод отключится при следующем запуске игры.</p>
+      <div class="scroll">
+        <table class="table">
+          <thead><tr><th>Мод</th><th>Ключ</th><th>Заметка</th><th>Срок</th><th>Был в сети</th><th></th></tr></thead>
+          <tbody id="deviceRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section id="versions" class="hidden">
     <div class="card">
       <h2>Загрузить новую версию</h2>
@@ -164,6 +190,15 @@
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<div class="modal-bg hidden" id="modal">
+  <div class="modal">
+    <p id="modalText"></p>
+    <div class="row">
+      <button id="modalNo">Отмена</button>
+      <button class="primary" id="modalYes">Да</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -203,6 +238,35 @@ function status(k) {
   return `<span class="pill on">Активен · ${left} дн.</span>` + (k.bound ? '' : ' <span class="muted">отвязан</span>');
 }
 
+/** Своё окно подтверждения: встроенные confirm/prompt браузеры иногда блокируют. */
+function ask(text, yes = 'Да') {
+  return new Promise(resolve => {
+    $('modalText').textContent = text;
+    $('modalYes').textContent = yes;
+    $('modal').classList.remove('hidden');
+    const done = v => { $('modal').classList.add('hidden'); $('modalYes').onclick = $('modalNo').onclick = null; resolve(v); };
+    $('modalYes').onclick = () => done(true);
+    $('modalNo').onclick = () => done(false);
+  });
+}
+
+function renderDevices() {
+  const now = Date.now();
+  const rows = allKeys.filter(k => k.activated && k.bound);
+  $('deviceRows').innerHTML = rows.map(k => {
+    const left = Math.ceil((k.expires - now) / 86400000);
+    return `
+    <tr>
+      <td><button class="switch ${k.disabled ? '' : 'on'}" data-toggle="${esc(k.code)}" data-on="${!k.disabled}" title="${k.disabled ? 'Включить мод' : 'Выключить мод'}"></button></td>
+      <td><span class="code" data-copy="${esc(k.code)}">${esc(k.code)}</span></td>
+      <td>${esc(k.note) || '<span class="muted">—</span>'}</td>
+      <td>${left > 0 ? left + ' дн.' : '<span class="pill end">Истёк</span>'}</td>
+      <td class="muted">${when(k.lastSeen)}</td>
+      <td><button class="small" data-unbind="${esc(k.code)}" title="Игрок сменил компьютер">Отвязать</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="muted">Пока никто не активировал ключ</td></tr>';
+}
+
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function renderKeys() {
@@ -217,7 +281,8 @@ function renderKeys() {
       <td><div class="actions">
         <button class="small" data-act="extend" data-days="7" data-key="${esc(k.code)}">+7 дн.</button>
         <button class="small" data-act="extend" data-days="30" data-key="${esc(k.code)}">+30 дн.</button>
-        <button class="small" data-act="extend" data-days="ask" data-key="${esc(k.code)}">±…</button>
+        <span class="add-days"><input type="number" placeholder="дней" title="Сколько дней добавить (минус — убрать)">
+          <button class="small" data-act="extend" data-days="custom" data-key="${esc(k.code)}">Добавить</button></span>
         ${k.bound ? `<button class="small" data-act="unbind" data-key="${esc(k.code)}" title="Игрок сменил компьютер">Отвязать ПК</button>` : ''}
         <button class="small" data-act="${k.disabled ? 'enable' : 'disable'}" data-key="${esc(k.code)}">${k.disabled ? 'Включить' : 'Отключить'}</button>
         <button class="small danger" data-act="delete" data-key="${esc(k.code)}">Удалить</button>
@@ -251,9 +316,9 @@ async function loadVersions() {
 
 function showTab(name) {
   document.querySelectorAll('.tab[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  $('keys').classList.toggle('hidden', name !== 'keys');
-  $('versions').classList.toggle('hidden', name !== 'versions');
-  (name === 'keys' ? loadKeys() : loadVersions()).catch(e => toast(e.message));
+  ['keys', 'devices', 'versions'].forEach(s => $(s).classList.toggle('hidden', name !== s));
+  const load = name === 'versions' ? loadVersions() : loadKeys().then(renderDevices);
+  load.catch(e => toast(e.message));
 }
 
 async function login() {
@@ -305,22 +370,42 @@ $('keyRows').onclick = async e => {
   try {
     if (act === 'extend') {
       let days = b.dataset.days;
-      if (days === 'ask') {
-        days = prompt('Сколько дней добавить? (минус — убрать дни)', '14');
-        if (days === null || !/^-?\d+$/.test(days.trim())) return;
+      if (days === 'custom') {
+        days = b.parentElement.querySelector('input').value.trim();
+        if (!/^-?\d+$/.test(days) || +days === 0) { toast('Впиши число дней, например 14 или -3'); return; }
       }
       await api('POST', 'extend', { key, days });
       toast(`Ключ ${key}: ${days > 0 ? '+' : ''}${days} дн.`);
     } else if (act === 'delete') {
-      if (!confirm(`Удалить ключ ${key}? Игрок потеряет доступ, вернуть нельзя.`)) return;
+      if (!await ask(`Удалить ключ ${key}? Игрок потеряет доступ, вернуть нельзя.`, 'Удалить')) return;
       await api('POST', 'delete', { key });
+      toast('Ключ удалён');
     } else if (act === 'unbind') {
-      if (!confirm(`Отвязать ${key} от компьютера? Срок сохранится, игрок сможет активировать ключ на новом ПК.`)) return;
+      if (!await ask(`Отвязать ${key} от компьютера? Срок сохранится, игрок сможет активировать ключ на новом ПК.`, 'Отвязать')) return;
       await api('POST', 'unbind', { key });
     } else {
       await api('POST', act, { key });
     }
     await loadKeys();
+  } catch (err) { toast(err.message); }
+};
+
+$('deviceRows').onclick = async e => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован')); return; }
+  try {
+    const t = e.target.closest('[data-toggle]');
+    if (t) {
+      const on = t.dataset.on === 'true';
+      await api('POST', on ? 'disable' : 'enable', { key: t.dataset.toggle });
+      toast(on ? 'Мод на этом устройстве выключен' : 'Мод на этом устройстве включён');
+    }
+    const u = e.target.closest('[data-unbind]');
+    if (u) {
+      if (!await ask(`Отвязать ${u.dataset.unbind} от компьютера? Срок сохранится, игрок сможет активировать ключ на новом ПК.`, 'Отвязать')) return;
+      await api('POST', 'unbind', { key: u.dataset.unbind });
+    }
+    if (t || u) { await loadKeys(); renderDevices(); }
   } catch (err) { toast(err.message); }
 };
 
@@ -341,7 +426,7 @@ $('upload').onclick = async () => {
 
 $('verRows').onclick = async e => {
   const b = e.target.closest('[data-delver]');
-  if (!b || !confirm('Удалить версию ' + b.dataset.delver + '?')) return;
+  if (!b || !await ask('Удалить версию ' + b.dataset.delver + '?', 'Удалить')) return;
   try { await api('POST', 'versions/delete', { version: b.dataset.delver }); await loadVersions(); }
   catch (err) { toast(err.message); }
 };
