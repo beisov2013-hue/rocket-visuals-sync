@@ -84,7 +84,7 @@
   .switch.on:hover { background: #2fd36b; }
   .modal-bg { position: fixed; inset: 0; background: rgba(8, 8, 14, .7); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
   .modal { max-width: 380px; width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
-  .modal p { margin: 0 0 18px; }
+  .modal p { margin: 0 0 18px; white-space: pre-line; overflow-wrap: anywhere; }
   .modal .row { justify-content: flex-end; }
   @media (max-width: 640px) { .tabs { margin-left: 0; width: 100%; } header { flex-wrap: wrap; } }
 </style>
@@ -177,7 +177,7 @@
       </div>
       <div class="scroll">
         <table class="table">
-          <thead><tr><th>Ник</th><th>Зарегистрирован</th><th>Последний вход</th><th>Ключ</th><th>В сети</th></tr></thead>
+          <thead><tr><th>Ник</th><th>Зарегистрирован</th><th>Последний вход</th><th>Ключ</th><th>В сети</th><th>Пароль</th></tr></thead>
           <tbody id="userRows"></tbody>
         </table>
       </div>
@@ -425,8 +425,9 @@ function renderUsers() {
       <td class="muted">${when(u.lastLogin)}</td>
       <td>${key}</td>
       <td>${seen(lastSeen)}</td>
+      <td><button class="small" data-reset="${esc(u.nick)}" title="Пароли хранятся зашифрованно, их нельзя посмотреть — можно выдать новый">Сбросить пароль</button></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="5" class="muted">Пока никто не зарегистрировался</td></tr>';
+  }).join('') || '<tr><td colspan="6" class="muted">Пока никто не зарегистрировался</td></tr>';
 
   const day = 86400000;
   $('userStats').innerHTML = `
@@ -472,9 +473,18 @@ $('logout').onclick = logout;
 document.querySelectorAll('.tab[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 $('search').oninput = renderKeys;
 $('userSearch').oninput = renderUsers;
-$('userRows').onclick = e => {
+$('userRows').onclick = async e => {
   const copy = e.target.closest('[data-copy]');
-  if (copy) navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован'));
+  if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован')); return; }
+  const r = e.target.closest('[data-reset]');
+  if (!r) return;
+  const nick = r.dataset.reset;
+  if (!await ask(`Сбросить пароль игрока ${nick}? Старый пароль перестанет работать, игрок выйдет из установщика.`, 'Сбросить')) return;
+  try {
+    const res = await api('POST', 'users/reset', { nick });
+    if (await ask(`Новый пароль для ${nick}: ${res.password}\nОтправь его игроку — больше он нигде не покажется.`, 'Скопировать'))
+      navigator.clipboard.writeText(res.password).then(() => toast('Пароль скопирован'));
+  } catch (err) { toast(err.message); }
 };
 
 $('create').onclick = async () => {

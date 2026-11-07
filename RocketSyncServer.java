@@ -762,6 +762,24 @@ public class RocketSyncServer {
 					update(c, "DELETE FROM rv_versions WHERE version=?", form(ex).get("version"));
 					send(ex, 200, "application/json", "{\"ok\":true}");
 				}
+				case "POST users/reset" -> {
+					// игрок забыл пароль: новый временный пароль показывается владельцу один раз, все входы сбрасываются
+					String nickKey = form(ex).getOrDefault("nick", "").trim().toLowerCase(Locale.ROOT);
+					if (!userExists(c, nickKey)) {
+						send(ex, 404, "application/json", error("Нет такого аккаунта"));
+						return;
+					}
+					StringBuilder pass = new StringBuilder();
+					for (int i = 0; i < 10; i++) {
+						pass.append(KEY_ALPHABET.toLowerCase(Locale.ROOT).charAt(RANDOM.nextInt(KEY_ALPHABET.length())));
+					}
+					byte[] salt = new byte[16];
+					RANDOM.nextBytes(salt);
+					update(c, "UPDATE rv_users SET salt=?, hash=? WHERE nick_key=?",
+							HexFormat.of().formatHex(salt), hashPassword(pass.toString(), salt), nickKey);
+					update(c, "DELETE FROM rv_sessions WHERE nick_key=?", nickKey);
+					send(ex, 200, "application/json", "{\"ok\":true,\"password\":" + quote(pass.toString()) + "}");
+				}
 				case "GET extras" -> {
 					StringBuilder json = new StringBuilder("[");
 					try (PreparedStatement st = c.prepareStatement(
