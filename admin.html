@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Rocket Visuals — панель</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0e15; --card: #15151f; --line: #232334; --text: #f4f2ff; --muted: #8a8aa3;
+    --accent: #8b5cf6; --accent-soft: rgba(139, 92, 246, .2); --ok: #22c55e; --bad: #f87171; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 500 14px/1.45 Inter, system-ui, sans-serif;
+    background-image: radial-gradient(600px 400px at 0 0, rgba(139, 92, 246, .22), transparent 70%);
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 16px 60px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+  header h1 { font-size: 22px; font-weight: 600; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .logo { width: 42px; height: 42px; flex: none; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+  input, textarea {
+    background: #1c1c29; border: 1px solid #26263a; color: var(--text); border-radius: 10px;
+    padding: 9px 12px; font: inherit; outline: none; min-width: 0;
+  }
+  input:focus, textarea:focus { border-color: var(--accent); }
+  button {
+    border: 0; border-radius: 10px; padding: 9px 14px; font: 600 13px Inter, system-ui, sans-serif; cursor: pointer;
+    background: #1f1f2e; color: var(--text); border: 1px solid #2a2a3e; transition: background .15s, transform .1s;
+  }
+  button:hover { background: #29293b; }
+  button:active { transform: scale(.97); }
+  button.primary { background: linear-gradient(135deg, #a07bff, #7c4df0); border: 0; box-shadow: 0 6px 18px rgba(124, 77, 240, .35); }
+  button.primary:hover { filter: brightness(1.08); }
+  button.tab { background: transparent; border-color: transparent; color: var(--muted); }
+  button.tab.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  button.small { padding: 5px 9px; font-size: 12px; border-radius: 8px; }
+  button.danger:hover { background: rgba(248, 113, 113, .18); color: var(--bad); }
+  .table { width: 100%; border-collapse: collapse; }
+  .table th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 500; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .table td { padding: 10px; border-bottom: 1px solid #1c1c29; vertical-align: middle; }
+  .table tr:last-child td { border-bottom: 0; }
+  .code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; letter-spacing: .5px; cursor: pointer; white-space: nowrap; }
+  .pill { white-space: nowrap; }
+  .code:hover { color: #c4b0ff; }
+  .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.new { background: rgba(139, 92, 246, .18); color: #c4b0ff; }
+  .pill.on { background: rgba(34, 197, 94, .15); color: #4ade80; }
+  .pill.end { background: rgba(251, 191, 36, .14); color: var(--warn); }
+  .pill.off { background: rgba(248, 113, 113, .15); color: var(--bad); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .actions { display: flex; gap: 5px; flex-wrap: wrap; }
+  .scroll { overflow-x: auto; }
+  .new-keys { margin-top: 14px; display: none; }
+  .new-keys pre { background: #1c1c29; border-radius: 12px; padding: 12px; margin: 8px 0 0; font-size: 13px; white-space: pre-wrap; }
+  .login { max-width: 360px; margin: 14vh auto 0; }
+  .login input { width: 100%; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0;
+    background: #222233; border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; transition: .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  .err { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .hidden { display: none !important; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stat { flex: 1 1 140px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 22px; font-weight: 600; }
+  @media (max-width: 640px) { .tabs { margin-left: 0; width: 100%; } header { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="logo" viewBox="0 0 20 20">
+      <rect width="20" height="20" rx="6" fill="rgba(139,92,246,.22)" stroke="rgba(139,92,246,.6)" stroke-width=".6"/>
+      <g transform="translate(11 10.5) rotate(45)">
+        <rect x="-1.8" y="4.5" width="3.6" height="5" rx="1.8" fill="#BF85B7"/>
+        <rect x="-.9" y="4.5" width="1.8" height="3.5" rx=".9" fill="#FFF1D6"/>
+        <rect x="-5.2" y="1.2" width="3.7" height="4.8" rx="1.6" fill="#8B5CF6"/>
+        <rect x="1.5" y="1.2" width="3.7" height="4.8" rx="1.6" fill="#8B5CF6"/>
+        <rect x="-2.9" y="-7.5" width="5.8" height="13" rx="2.9" fill="#F4F2FF"/>
+        <circle cx="0" cy="-2" r="1.4" fill="#8B5CF6"/>
+      </g>
+      <circle cx="4.7" cy="4.7" r="2.3" fill="#8B5CF6"/>
+      <circle cx="3.85" cy="3.85" r=".75" fill="rgba(255,255,255,.5)"/>
+    </svg>
+    <div>
+      <h1>Rocket Visuals</h1>
+      <div class="sub">Панель владельца</div>
+    </div>
+    <div class="tabs hidden" id="tabs">
+      <button class="tab on" data-tab="keys">Ключи</button>
+      <button class="tab" data-tab="versions">Версии мода</button>
+      <button class="tab" id="logout">Выйти</button>
+    </div>
+  </header>
+
+  <div class="card login" id="login">
+    <h2>Вход</h2>
+    <label>Пароль панели<input type="password" id="password" autocomplete="current-password"></label>
+    <div style="margin-top:12px"><button class="primary" id="loginBtn">Войти</button></div>
+    <div class="err" id="loginErr"></div>
+  </div>
+
+  <section id="keys" class="hidden">
+    <div class="stats" id="stats"></div>
+    <div class="card">
+      <h2>Новые ключи</h2>
+      <div class="row">
+        <label>Дней<input type="number" id="days" value="30" min="1" max="3650" style="width:90px"></label>
+        <label>Сколько ключей<input type="number" id="count" value="1" min="1" max="50" style="width:110px"></label>
+        <label style="flex:1 1 200px">Заметка (кому)<input id="note" placeholder="например, ник покупателя"></label>
+        <button class="primary" id="create">Создать</button>
+      </div>
+      <div class="new-keys" id="newKeys">
+        <div class="row" style="align-items:center"><span class="muted">Готово — скопируй и отправь покупателю:</span>
+          <button class="small" id="copyNew">Скопировать</button></div>
+        <pre id="newKeysText"></pre>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">Все ключи</h2>
+        <input id="search" placeholder="Поиск по ключу или заметке" style="width:240px">
+      </div>
+      <div class="scroll">
+        <table class="table">
+          <thead><tr><th>Ключ</th><th>Заметка</th><th>Статус</th><th>Был в сети</th><th>Действия</th></tr></thead>
+          <tbody id="keyRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="versions" class="hidden">
+    <div class="card">
+      <h2>Загрузить новую версию</h2>
+      <div class="row">
+        <label>Версия<input id="ver" placeholder="1.0.1" style="width:110px"></label>
+        <label style="flex:1 1 220px">Что нового<input id="notes" placeholder="коротко, увидят игроки"></label>
+        <label>Файл .jar<input type="file" id="jar" accept=".jar"></label>
+        <button class="primary" id="upload">Загрузить</button>
+      </div>
+      <p class="muted" style="margin:12px 0 0">Последняя загруженная версия сразу уходит всем: установщик скачает её при следующем запуске.</p>
+    </div>
+    <div class="card">
+      <h2>Версии</h2>
+      <div class="scroll">
+        <table class="table">
+          <thead><tr><th>Версия</th><th>Что нового</th><th>Загружена</th><th>Размер</th><th></th></tr></thead>
+          <tbody id="verRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let password = '';
+try { password = sessionStorage.getItem('rv-admin') || ''; } catch (e) {}
+let allKeys = [];
+
+function toast(text) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+async function api(method, action, body, isFile) {
+  const opts = { method, headers: { 'X-Admin-Password': password } };
+  if (body !== undefined) {
+    if (isFile) { opts.body = body; }
+    else { opts.headers['Content-Type'] = 'application/x-www-form-urlencoded'; opts.body = new URLSearchParams(body).toString(); }
+  }
+  const res = await fetch('/admin/api/' + action, opts);
+  const data = await res.json().catch(() => ({ ok: false, error: 'Сервер не ответил' }));
+  if (res.status === 401) { logout(); throw new Error(data.error); }
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Ошибка');
+  return data;
+}
+
+function when(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function status(k) {
+  if (k.disabled) return '<span class="pill off">Отключён</span>';
+  if (!k.activated) return `<span class="pill new">Не активирован · ${k.days} дн.</span>`;
+  const left = Math.ceil((k.expires - Date.now()) / 86400000);
+  if (left <= 0) return '<span class="pill end">Истёк</span>';
+  return `<span class="pill on">Активен · ${left} дн.</span>` + (k.bound ? '' : ' <span class="muted">отвязан</span>');
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function renderKeys() {
+  const q = $('search').value.trim().toLowerCase();
+  const rows = allKeys.filter(k => !q || k.code.toLowerCase().includes(q) || (k.note || '').toLowerCase().includes(q));
+  $('keyRows').innerHTML = rows.map(k => `
+    <tr>
+      <td><span class="code" data-copy="${esc(k.code)}" title="Скопировать">${esc(k.code)}</span></td>
+      <td>${esc(k.note) || '<span class="muted">—</span>'}</td>
+      <td>${status(k)}</td>
+      <td class="muted">${when(k.lastSeen)}</td>
+      <td><div class="actions">
+        <button class="small" data-act="extend" data-days="7" data-key="${esc(k.code)}">+7 дн.</button>
+        <button class="small" data-act="extend" data-days="30" data-key="${esc(k.code)}">+30 дн.</button>
+        <button class="small" data-act="extend" data-days="ask" data-key="${esc(k.code)}">±…</button>
+        ${k.bound ? `<button class="small" data-act="unbind" data-key="${esc(k.code)}" title="Игрок сменил компьютер">Отвязать ПК</button>` : ''}
+        <button class="small" data-act="${k.disabled ? 'enable' : 'disable'}" data-key="${esc(k.code)}">${k.disabled ? 'Включить' : 'Отключить'}</button>
+        <button class="small danger" data-act="delete" data-key="${esc(k.code)}">Удалить</button>
+      </div></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">Ключей пока нет</td></tr>';
+
+  const now = Date.now();
+  const active = allKeys.filter(k => !k.disabled && k.activated && k.expires > now).length;
+  const fresh = allKeys.filter(k => !k.disabled && !k.activated).length;
+  const online = allKeys.filter(k => k.lastSeen && now - k.lastSeen < 86400000).length;
+  $('stats').innerHTML = `
+    <div class="stat"><span class="muted">Всего ключей</span><b>${allKeys.length}</b></div>
+    <div class="stat"><span class="muted">Активных</span><b>${active}</b></div>
+    <div class="stat"><span class="muted">Ещё не активированы</span><b>${fresh}</b></div>
+    <div class="stat"><span class="muted">Заходили за сутки</span><b>${online}</b></div>`;
+}
+
+async function loadKeys() { allKeys = await api('GET', 'keys'); renderKeys(); }
+
+async function loadVersions() {
+  const list = await api('GET', 'versions');
+  $('verRows').innerHTML = list.map((v, i) => `
+    <tr>
+      <td><b>${esc(v.version)}</b> ${i === 0 ? '<span class="pill on">у всех</span>' : ''}</td>
+      <td>${esc(v.notes) || '<span class="muted">—</span>'}</td>
+      <td class="muted">${when(v.uploaded)}</td>
+      <td class="muted">${(v.size / 1048576).toFixed(1)} МБ</td>
+      <td><button class="small danger" data-delver="${esc(v.version)}">Удалить</button></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">Версий пока нет — загрузи .jar мода</td></tr>';
+}
+
+function showTab(name) {
+  document.querySelectorAll('.tab[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $('keys').classList.toggle('hidden', name !== 'keys');
+  $('versions').classList.toggle('hidden', name !== 'versions');
+  (name === 'keys' ? loadKeys() : loadVersions()).catch(e => toast(e.message));
+}
+
+async function login() {
+  password = $('password').value;
+  $('loginErr').textContent = '';
+  try {
+    await api('GET', 'keys');
+    try { sessionStorage.setItem('rv-admin', password); } catch (e) {}
+    $('login').classList.add('hidden');
+    $('tabs').classList.remove('hidden');
+    showTab('keys');
+  } catch (e) {
+    $('loginErr').textContent = e.message;
+  }
+}
+
+function logout() {
+  password = '';
+  try { sessionStorage.removeItem('rv-admin'); } catch (e) {}
+  $('login').classList.remove('hidden');
+  $('tabs').classList.add('hidden');
+  $('keys').classList.add('hidden');
+  $('versions').classList.add('hidden');
+}
+
+$('loginBtn').onclick = login;
+$('password').onkeydown = e => { if (e.key === 'Enter') login(); };
+$('logout').onclick = logout;
+document.querySelectorAll('.tab[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$('search').oninput = renderKeys;
+
+$('create').onclick = async () => {
+  try {
+    const r = await api('POST', 'keys', { days: $('days').value, count: $('count').value, note: $('note').value });
+    $('newKeysText').textContent = r.keys.join('\n');
+    $('newKeys').style.display = 'block';
+    $('note').value = '';
+    await loadKeys();
+  } catch (e) { toast(e.message); }
+};
+$('copyNew').onclick = () => navigator.clipboard.writeText($('newKeysText').textContent).then(() => toast('Скопировано'));
+
+$('keyRows').onclick = async e => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast('Ключ скопирован')); return; }
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const key = b.dataset.key, act = b.dataset.act;
+  try {
+    if (act === 'extend') {
+      let days = b.dataset.days;
+      if (days === 'ask') {
+        days = prompt('Сколько дней добавить? (минус — убрать дни)', '14');
+        if (days === null || !/^-?\d+$/.test(days.trim())) return;
+      }
+      await api('POST', 'extend', { key, days });
+      toast(`Ключ ${key}: ${days > 0 ? '+' : ''}${days} дн.`);
+    } else if (act === 'delete') {
+      if (!confirm(`Удалить ключ ${key}? Игрок потеряет доступ, вернуть нельзя.`)) return;
+      await api('POST', 'delete', { key });
+    } else if (act === 'unbind') {
+      if (!confirm(`Отвязать ${key} от компьютера? Срок сохранится, игрок сможет активировать ключ на новом ПК.`)) return;
+      await api('POST', 'unbind', { key });
+    } else {
+      await api('POST', act, { key });
+    }
+    await loadKeys();
+  } catch (err) { toast(err.message); }
+};
+
+$('upload').onclick = async () => {
+  const file = $('jar').files[0], version = $('ver').value.trim();
+  if (!/^\d{1,3}(\.\d{1,3}){1,3}$/.test(version)) { toast('Версия должна быть вида 1.0.1'); return; }
+  if (!file) { toast('Выбери .jar файл'); return; }
+  try {
+    $('upload').disabled = true; $('upload').textContent = 'Загружаю...';
+    const params = new URLSearchParams({ version, notes: $('notes').value });
+    await api('POST', 'versions?' + params, file, true);
+    toast('Версия ' + version + ' загружена');
+    $('ver').value = ''; $('notes').value = ''; $('jar').value = '';
+    await loadVersions();
+  } catch (e) { toast(e.message); }
+  finally { $('upload').disabled = false; $('upload').textContent = 'Загрузить'; }
+};
+
+$('verRows').onclick = async e => {
+  const b = e.target.closest('[data-delver]');
+  if (!b || !confirm('Удалить версию ' + b.dataset.delver + '?')) return;
+  try { await api('POST', 'versions/delete', { version: b.dataset.delver }); await loadVersions(); }
+  catch (err) { toast(err.message); }
+};
+
+if (password) { $('password').value = password; login(); }
+</script>
+</body>
+</html>
