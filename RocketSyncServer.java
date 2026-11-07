@@ -101,8 +101,10 @@ public class RocketSyncServer {
 				postCosmetics(ex);
 			} else if (method.equals("GET") && path.equals("/cosmetics")) {
 				getCosmetics(ex);
-			} else if (method.equals("GET") && path.equals("/")) {
+			} else if (method.equals("GET") && path.equals("/health")) {
 				send(ex, 200, "text/plain", "Rocket Visuals sync OK");
+			} else if (method.equals("GET") && (path.equals("/") || path.startsWith("/img/") || path.equals("/download"))) {
+				site(ex, path);
 			} else if (path.startsWith("/api/")) {
 				if (!requireDatabase(ex)) {
 					return;
@@ -133,6 +135,41 @@ public class RocketSyncServer {
 			send(ex, 400, "text/plain", "bad request");
 		} finally {
 			ex.close();
+		}
+	}
+
+	// ======================== сайт мода ========================
+
+	private static final Pattern IMG_RE = Pattern.compile("^/img/[a-z0-9-]{1,40}\\.(png|jpg|webp)$");
+
+	/** Страница мода (папка site): главная, картинки и установщик для скачивания. */
+	private static void site(HttpExchange ex, String path) throws IOException {
+		Path file;
+		String type;
+		if (path.equals("/")) {
+			file = Path.of("site", "index.html");
+			type = "text/html; charset=utf-8";
+		} else if (path.equals("/download")) {
+			file = Path.of("site", "RocketVisualsLauncher.exe");
+			type = "application/octet-stream";
+			ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"RocketVisualsLauncher.exe\"");
+		} else if (IMG_RE.matcher(path).matches()) {
+			file = Path.of("site", "img", path.substring(5));
+			type = path.endsWith(".png") ? "image/png" : path.endsWith(".webp") ? "image/webp" : "image/jpeg";
+			ex.getResponseHeaders().set("Cache-Control", "public, max-age=86400");
+		} else {
+			send(ex, 404, "text/plain", "not found");
+			return;
+		}
+		if (!Files.isRegularFile(file)) {
+			send(ex, 404, "text/plain", "not found");
+			return;
+		}
+		ex.getResponseHeaders().set("Content-Type", type);
+		long size = Files.size(file);
+		ex.sendResponseHeaders(200, size);
+		try (OutputStream out = ex.getResponseBody()) {
+			Files.copy(file, out);
 		}
 	}
 

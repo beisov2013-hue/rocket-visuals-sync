@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rocket Visuals — клиент-мод для Minecraft 1.21.11</title>
+<meta name="description" content="Rocket Visuals — красивый клиент-мод для Minecraft 1.21.11 на Fabric: 3D-облака, PvP-визуалы, шляпы и мечи, которые видят другие, оптимизация. Меню на Right Shift.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Crect width='20' height='20' rx='6' fill='%238B5CF6'/%3E%3Cg transform='translate(11 10.5) rotate(45)'%3E%3Crect x='-2.9' y='-7.5' width='5.8' height='13' rx='2.9' fill='%23F4F2FF'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0b12; --card: #14141e; --card2: #191926; --line: #24243a; --text: #f4f2ff; --muted: #9a98b3;
+    --accent: #8b5cf6; --accent2: #b794ff; --glow: rgba(139, 92, 246, .35);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 400 16px/1.6 Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+
+  /* Фон: мягкое фиолетовое свечение */
+  .glow { position: fixed; inset: 0; pointer-events: none; z-index: -1;
+    background:
+      radial-gradient(700px 500px at 10% -5%, rgba(139, 92, 246, .28), transparent 70%),
+      radial-gradient(600px 500px at 95% 20%, rgba(183, 148, 255, .12), transparent 70%),
+      radial-gradient(800px 600px at 50% 110%, rgba(139, 92, 246, .14), transparent 70%); }
+
+  /* Шапка */
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(14px); background: rgba(11, 11, 18, .7); border-bottom: 1px solid rgba(255,255,255,.05); }
+  nav .wrap { display: flex; align-items: center; gap: 14px; height: 66px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; }
+  .brand svg { width: 34px; height: 34px; }
+  .brand span { color: var(--accent2); }
+  .links { display: flex; gap: 26px; margin-left: auto; font-size: 14px; color: var(--muted); }
+  .links a:hover { color: var(--text); }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 9px; height: 50px; padding: 0 24px;
+    border-radius: 14px; font-weight: 600; font-size: 15px; transition: transform .15s, box-shadow .2s, background .2s; cursor: pointer; border: 0; }
+  .btn:active { transform: scale(.97); }
+  .btn.primary { background: linear-gradient(135deg, #a07bff, #7c4df0); color: #fff; box-shadow: 0 10px 30px var(--glow); }
+  .btn.primary:hover { box-shadow: 0 14px 40px rgba(139, 92, 246, .55); transform: translateY(-1px); }
+  .btn.ghost { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); color: var(--text); }
+  .btn.ghost:hover { background: rgba(255,255,255,.1); }
+  .btn.small { height: 40px; padding: 0 16px; font-size: 14px; border-radius: 11px; }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* Главный блок */
+  .hero { padding-top: 80px; padding-bottom: 40px; display: grid; grid-template-columns: 1fr 1.1fr; gap: 50px; align-items: center; }
+  .badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 999px; font-size: 13px;
+    background: rgba(139, 92, 246, .14); border: 1px solid rgba(139, 92, 246, .35); color: #cdb9ff; }
+  .badge i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+  h1 { font-size: clamp(40px, 6vw, 64px); line-height: 1.05; letter-spacing: -1.5px; margin: 18px 0 18px; font-weight: 700; }
+  h1 span { background: linear-gradient(120deg, #c4b0ff, #8b5cf6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { color: var(--muted); font-size: 18px; max-width: 480px; margin: 0 0 30px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .meta { display: flex; gap: 22px; margin-top: 28px; color: var(--muted); font-size: 14px; flex-wrap: wrap; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .shot { position: relative; border-radius: 20px; overflow: hidden; border: 1px solid var(--line);
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(139,92,246,.15), 0 0 80px rgba(139,92,246,.18); transform: rotate(1.2deg); }
+
+  section { padding-top: 70px; padding-bottom: 70px; }
+  .title { text-align: center; margin-bottom: 44px; }
+  .title h2 { font-size: clamp(30px, 4vw, 42px); margin: 0 0 10px; letter-spacing: -.8px; }
+  .title p { color: var(--muted); margin: 0; }
+
+  /* Функции */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .feature { background: linear-gradient(180deg, var(--card2), var(--card)); border: 1px solid var(--line); border-radius: 20px; padding: 24px;
+    transition: transform .2s, border-color .2s; }
+  .feature:hover { transform: translateY(-3px); border-color: rgba(139, 92, 246, .5); }
+  .ico { width: 46px; height: 46px; border-radius: 14px; background: rgba(139, 92, 246, .16); display: grid; place-items: center; margin-bottom: 16px; }
+  .ico svg { width: 22px; height: 22px; stroke: #c4b0ff; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .feature h3 { margin: 0 0 6px; font-size: 18px; }
+  .feature p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  /* Галерея */
+  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .gallery figure { margin: 0; border-radius: 16px; overflow: hidden; border: 1px solid var(--line); background: var(--card); cursor: zoom-in; }
+  .gallery img { aspect-ratio: 16 / 9; object-fit: cover; width: 100%; transition: transform .3s; }
+  .gallery figure:hover img { transform: scale(1.04); }
+  .gallery figcaption { padding: 10px 14px; font-size: 13.5px; color: var(--muted); }
+  .lightbox { position: fixed; inset: 0; background: rgba(5,5,10,.9); display: none; align-items: center; justify-content: center; z-index: 50; padding: 20px; cursor: zoom-out; }
+  .lightbox.on { display: flex; }
+  .lightbox img { max-height: 90vh; border-radius: 14px; }
+
+  /* Шаги */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; counter-reset: s; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 26px; position: relative; }
+  .step::before { counter-increment: s; content: counter(s); width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #a07bff, #7c4df0); font-weight: 700; margin-bottom: 14px; box-shadow: 0 8px 20px var(--glow); }
+  .step h3 { margin: 0 0 6px; font-size: 18px; }
+  .step p { margin: 0; color: var(--muted); font-size: 14.5px; }
+
+  /* Покупка */
+  .buy { background: linear-gradient(135deg, rgba(139,92,246,.22), rgba(124,77,240,.08)); border: 1px solid rgba(139,92,246,.4);
+    border-radius: 26px; padding: 44px; display: grid; grid-template-columns: 1.3fr 1fr; gap: 30px; align-items: center; }
+  .buy h2 { margin: 0 0 10px; font-size: clamp(28px, 3.5vw, 38px); letter-spacing: -.6px; }
+  .buy p { margin: 0; color: #cfc9e8; }
+  .buy ul { margin: 18px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .buy li { display: flex; gap: 10px; align-items: center; font-size: 15px; }
+  .buy li::before { content: ""; width: 18px; height: 18px; border-radius: 6px; flex: none;
+    background: #8b5cf6 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 10'%3E%3Cpath d='M1 5l3.2 3L11 1' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/10px no-repeat; }
+  .buy .side { display: grid; gap: 12px; }
+  .buy .tg { font-size: 14px; color: var(--muted); text-align: center; }
+
+  /* Вопросы */
+  .faq { max-width: 760px; margin: 0 auto; display: grid; gap: 10px; }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 22px; }
+  summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 10px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--accent2); font-size: 20px; line-height: 1; transition: transform .2s; }
+  details[open] summary::after { transform: rotate(45deg); }
+  details p { margin: 10px 0 0; color: var(--muted); font-size: 15px; }
+
+  footer { border-top: 1px solid rgba(255,255,255,.06); padding: 30px 0 40px; color: #6f6d87; font-size: 13px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; padding-top: 50px; gap: 34px; }
+    .shot { transform: none; }
+    .grid, .gallery, .steps { grid-template-columns: 1fr 1fr; }
+    .buy { grid-template-columns: 1fr; padding: 30px; }
+    .links { display: none; }
+    nav .btn { margin-left: auto; }
+  }
+  @media (max-width: 560px) {
+    .grid, .gallery, .steps { grid-template-columns: 1fr; }
+    .cta .btn { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#">
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <rect width="20" height="20" rx="6" fill="rgba(139,92,246,.22)" stroke="rgba(139,92,246,.6)" stroke-width=".6"/>
+        <g transform="translate(11 10.5) rotate(45)">
+          <rect x="-1.8" y="4.5" width="3.6" height="5" rx="1.8" fill="#BF85B7"/>
+          <rect x="-.9" y="4.5" width="1.8" height="3.5" rx=".9" fill="#FFF1D6"/>
+          <rect x="-5.2" y="1.2" width="3.7" height="4.8" rx="1.6" fill="#8B5CF6"/>
+          <rect x="1.5" y="1.2" width="3.7" height="4.8" rx="1.6" fill="#8B5CF6"/>
+          <rect x="-2.9" y="-7.5" width="5.8" height="13" rx="2.9" fill="#F4F2FF"/>
+          <circle cx="0" cy="-2" r="1.4" fill="#8B5CF6"/>
+        </g>
+        <circle cx="4.7" cy="4.7" r="2.3" fill="#8B5CF6"/>
+        <circle cx="3.85" cy="3.85" r=".75" fill="rgba(255,255,255,.5)"/>
+      </svg>
+      Rocket <span>Visuals</span>
+    </a>
+    <div class="links">
+      <a href="#features">Функции</a>
+      <a href="#gallery">Скриншоты</a>
+      <a href="#start">Как начать</a>
+      <a href="#faq">Вопросы</a>
+    </div>
+    <a class="btn primary small" href="#buy">Купить ключ</a>
+  </div>
+</nav>
+
+<header class="wrap hero">
+  <div>
+    <div class="badge"><i></i> Minecraft 1.21.11 · Fabric</div>
+    <h1>Майнкрафт, который <span>приятно</span> видеть</h1>
+    <p class="lead">Rocket Visuals — клиент-мод с красивым меню на Right Shift: объёмные облака, PvP-визуалы, шляпы и мечи, которые видят другие игроки, и оптимизация.</p>
+    <div class="cta">
+      <a class="btn primary" href="#buy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Купить ключ
+      </a>
+      <a class="btn ghost" href="/download">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 21h16"/></svg>
+        Скачать установщик
+      </a>
+    </div>
+    <div class="meta">
+      <div><b>40+</b> функций</div>
+      <div><b>Авто</b>обновления</div>
+      <div><b>RU / EN</b> меню</div>
+    </div>
+  </div>
+  <div class="shot"><img src="/img/menu.png" alt="Меню Rocket Visuals в игре" width="854" height="480"></div>
+</header>
+
+<section id="features" class="wrap">
+  <div class="title">
+    <h2>Что внутри</h2>
+    <p>Всё включается и настраивается в одном меню — без лишних модов.</p>
+  </div>
+  <div class="grid">
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9z"/></svg></div>
+      <h3>Красивое небо</h3>
+      <p>Объёмные мягкие облака вместо квадратных, приятный цвет неба и ясная погода по желанию.</p>
+    </div>
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></div>
+      <h3>PvP-визуалы</h3>
+      <p>Хитбоксы, круг под целью, эффект удара, карточка цели, счётчик тотемов и траектория жемчуга.</p>
+    </div>
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 18h18M5 18l2-8 5 4 5-4 2 8"/><circle cx="7" cy="8" r="1.5"/><circle cx="17" cy="8" r="1.5"/><circle cx="12" cy="5" r="1.5"/></svg></div>
+      <h3>Косметика для всех</h3>
+      <p>Шляпы и свои мечи — катана, багет, тапок и другие. Их видят все игроки с Rocket Visuals.</p>
+    </div>
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/></svg></div>
+      <h3>Зум и прицел</h3>
+      <p>Плавный зум на клавишу, как в OptiFine, и красивый прицел с полоской перезарядки удара.</p>
+    </div>
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+      <h3>Оптимизация</h3>
+      <p>Меньше частиц и теней, дальность сущностей, ограничение FPS в фоне и проверенные моды ускорения.</p>
+    </div>
+    <div class="feature">
+      <div class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="M8 12h8M12 8v8"/></svg></div>
+      <h3>Удобный интерфейс</h3>
+      <p>Плавное меню на Right Shift, поиск по функциям, 4 цвета темы, перетаскиваемый HUD и Mouse Tweaks.</p>
+    </div>
+  </div>
+</section>
+
+<section id="gallery" class="wrap">
+  <div class="title">
+    <h2>Как это выглядит</h2>
+    <p>Настоящие скриншоты из игры. Нажми, чтобы увеличить.</p>
+  </div>
+  <div class="gallery">
+    <figure><img src="/img/sky.png" alt="Объёмные облака" loading="lazy"><figcaption>Объёмные облака Custom Sky</figcaption></figure>
+    <figure><img src="/img/pvp.png" alt="PvP-визуалы" loading="lazy"><figcaption>Хитбокс, круг цели и карточка противника</figcaption></figure>
+    <figure><img src="/img/hat.png" alt="Шляпа" loading="lazy"><figcaption>Китайская шляпа — видят все с модом</figcaption></figure>
+    <figure><img src="/img/cosmetics.png" alt="Косметика" loading="lazy"><figcaption>Мечи и шляпы во вкладке Cosmetics</figcaption></figure>
+    <figure><img src="/img/colors.png" alt="Цвета темы" loading="lazy"><figcaption>Четыре цвета оформления</figcaption></figure>
+    <figure><img src="/img/optimize.png" alt="Оптимизация" loading="lazy"><figcaption>Оптимизация в одном месте</figcaption></figure>
+  </div>
+</section>
+
+<section id="start" class="wrap">
+  <div class="title">
+    <h2>Как начать</h2>
+    <p>Три шага — и меню уже на Right Shift.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <h3>Получи ключ</h3>
+      <p>Напиши в Telegram <b>@meliin134</b> — пришлю ключ вида RV-XXXX-XXXX-XXXX.</p>
+    </div>
+    <div class="step">
+      <h3>Скачай установщик</h3>
+      <p>Зарегистрируйся в установщике, введи ключ и выбери папку <b>mods</b> своего Minecraft.</p>
+    </div>
+    <div class="step">
+      <h3>Играй</h3>
+      <p>Запусти Minecraft 1.21.11 с Fabric и нажми <b>Right Shift</b>. Новые версии мод ставит сам.</p>
+    </div>
+  </div>
+</section>
+
+<section id="buy" class="wrap">
+  <div class="buy">
+    <div>
+      <h2>Купить ключ Rocket Visuals</h2>
+      <p>Ключ привязывается к твоему аккаунту в установщике. Цену и срок подскажу в Telegram.</p>
+      <ul>
+        <li>Все функции мода и косметика</li>
+        <li>Автоматические обновления через установщик</li>
+        <li>Помощь с установкой</li>
+      </ul>
+    </div>
+    <div class="side">
+      <a class="btn primary" href="https://t.me/meliin134" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.7 19.5c-.2 1-.9 1.3-1.7.8l-4.8-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.3-.1-.5-.6-.2l-11 6.9-4.7-1.5c-1-.3-1-1 .2-1.5L20.6 3c.9-.3 1.6.2 1.3 1.3z"/></svg>
+        Написать в Telegram
+      </a>
+      <a class="btn ghost" href="/download">Скачать установщик</a>
+      <div class="tg">Telegram: <b>@meliin134</b></div>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="wrap">
+  <div class="title">
+    <h2>Вопросы</h2>
+  </div>
+  <div class="faq">
+    <details>
+      <summary>Что нужно, чтобы мод работал?</summary>
+      <p>Windows, Minecraft 1.21.11 с загрузчиком Fabric и ключ. Fabric API установщик поставит сам.</p>
+    </details>
+    <details>
+      <summary>Куда установщик ставит мод?</summary>
+      <p>В папку mods, которую ты выберешь. По умолчанию — %appdata%\.minecraft\mods. Подойдёт папка mods любого лаунчера с Fabric 1.21.11.</p>
+    </details>
+    <details>
+      <summary>Как обновлять мод?</summary>
+      <p>Просто открой установщик — он сам скачает новую версию и уберёт старую.</p>
+    </details>
+    <details>
+      <summary>Можно ли играть с одним ключом на двух компьютерах?</summary>
+      <p>Ключ работает на одном компьютере. Если сменил ПК — напиши в Telegram, ключ перенесут.</p>
+    </details>
+    <details>
+      <summary>Что будет, когда срок ключа закончится?</summary>
+      <p>Функции мода выключатся, а после выхода из игры мод удалится. Продли ключ — и установщик поставит его снова.</p>
+    </details>
+    <details>
+      <summary>Шляпы и мечи видят все?</summary>
+      <p>Их видят игроки, у которых тоже стоит Rocket Visuals. Для остальных ты выглядишь как обычно.</p>
+    </details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>© Rocket Visuals. Telegram: <a href="https://t.me/meliin134" target="_blank" rel="noopener">@meliin134</a></div>
+    <div>Не является официальным продуктом Minecraft. Не одобрено и не связано с Mojang или Microsoft.</div>
+  </div>
+</footer>
+
+<div class="lightbox" id="lightbox"><img alt=""></div>
+<script>
+  const box = document.getElementById('lightbox');
+  document.querySelectorAll('.gallery img, .shot img').forEach(img => img.addEventListener('click', () => {
+    box.querySelector('img').src = img.src;
+    box.classList.add('on');
+  }));
+  box.addEventListener('click', () => box.classList.remove('on'));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') box.classList.remove('on'); });
+</script>
+</body>
+</html>
