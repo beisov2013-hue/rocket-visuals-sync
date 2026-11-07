@@ -113,7 +113,7 @@
       <button class="tab on" data-tab="keys">Ключи</button>
       <button class="tab" data-tab="devices">Игроки</button>
       <button class="tab" data-tab="users">Регистрации</button>
-      <button class="tab" data-tab="versions">Версии мода</button>
+      <button class="tab" data-tab="versions">Моды</button>
       <button class="tab" id="logout">Выйти</button>
     </div>
   </header>
@@ -186,7 +186,7 @@
 
   <section id="versions" class="hidden">
     <div class="card">
-      <h2>Загрузить новую версию</h2>
+      <h2>Rocket Visuals — загрузить новую версию</h2>
       <div class="row">
         <label>Версия<input id="ver" placeholder="1.0.1" style="width:110px"></label>
         <label style="flex:1 1 220px">Что нового<input id="notes" placeholder="коротко, увидят игроки"></label>
@@ -196,11 +196,33 @@
       <p class="muted" style="margin:12px 0 0">Последняя загруженная версия сразу уходит всем: установщик скачает её при следующем запуске.</p>
     </div>
     <div class="card">
-      <h2>Версии</h2>
+      <h2>Версии Rocket Visuals</h2>
       <div class="scroll">
         <table class="table">
           <thead><tr><th>Версия</th><th>Что нового</th><th>Загружена</th><th>Размер</th><th></th></tr></thead>
           <tbody id="verRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Другие моды — игрок выбирает их галочками в установщике</h2>
+      <div class="row">
+        <label style="flex:1 1 160px">Название<input id="exName" placeholder="например, Зум+"></label>
+        <label>Версия<input id="exVer" placeholder="1.0.0" style="width:100px"></label>
+        <label style="flex:1 1 200px">Описание<input id="exNotes" placeholder="что делает, увидят игроки"></label>
+        <label>Файл .jar<input type="file" id="exJar" accept=".jar"></label>
+        <button class="primary" id="exUpload">Загрузить</button>
+      </div>
+      <p class="muted" style="margin:12px 0 0">Новая версия с тем же названием заменит старую у всех, кто выбрал этот мод.
+        Выкладывай только свои моды или те, что разрешено распространять.</p>
+    </div>
+    <div class="card">
+      <h2>Каталог модов</h2>
+      <div class="scroll">
+        <table class="table">
+          <thead><tr><th>Мод</th><th>Версия</th><th>Описание</th><th>Загружен</th><th>Размер</th><th></th></tr></thead>
+          <tbody id="exRows"></tbody>
         </table>
       </div>
     </div>
@@ -336,7 +358,45 @@ async function loadVersions() {
       <td class="muted">${(v.size / 1048576).toFixed(1)} МБ</td>
       <td><button class="small danger" data-delver="${esc(v.version)}">Удалить</button></td>
     </tr>`).join('') || '<tr><td colspan="5" class="muted">Версий пока нет — загрузи .jar мода</td></tr>';
+
+  const extras = await api('GET', 'extras');
+  const seenName = new Set();
+  $('exRows').innerHTML = extras.map(v => {
+    const latest = !seenName.has(v.name);
+    seenName.add(v.name);
+    return `
+    <tr>
+      <td><b>${esc(v.name)}</b></td>
+      <td>${esc(v.version)} ${latest ? '<span class="pill on">у всех</span>' : ''}</td>
+      <td>${esc(v.notes) || '<span class="muted">—</span>'}</td>
+      <td class="muted">${when(v.uploaded)}</td>
+      <td class="muted">${(v.size / 1048576).toFixed(1)} МБ</td>
+      <td><button class="small danger" data-delex="${esc(v.name)}" data-ver="${esc(v.version)}">Удалить</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="muted">Других модов пока нет</td></tr>';
 }
+
+$('exUpload').onclick = async () => {
+  const file = $('exJar').files[0], name = $('exName').value.trim(), version = $('exVer').value.trim();
+  if (name.length < 2) { toast('Впиши название мода'); return; }
+  if (!/^\d{1,3}(\.\d{1,3}){1,3}$/.test(version)) { toast('Версия должна быть вида 1.0.0'); return; }
+  if (!file) { toast('Выбери .jar файл'); return; }
+  try {
+    $('exUpload').disabled = true; $('exUpload').textContent = 'Загружаю...';
+    await api('POST', 'extras?' + new URLSearchParams({ name, version, notes: $('exNotes').value }), file, true);
+    toast(name + ' ' + version + ' загружен');
+    $('exVer').value = ''; $('exNotes').value = ''; $('exJar').value = '';
+    await loadVersions();
+  } catch (e) { toast(e.message); }
+  finally { $('exUpload').disabled = false; $('exUpload').textContent = 'Загрузить'; }
+};
+
+$('exRows').onclick = async e => {
+  const b = e.target.closest('[data-delex]');
+  if (!b || !await ask(`Удалить ${b.dataset.delex} ${b.dataset.ver}? У игроков, если это последняя версия, мод пропадёт из списка.`, 'Удалить')) return;
+  try { await api('POST', 'extras/delete', { name: b.dataset.delex, version: b.dataset.ver }); await loadVersions(); }
+  catch (err) { toast(err.message); }
+};
 
 let allUsers = [];
 

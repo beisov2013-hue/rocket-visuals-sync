@@ -60,7 +60,8 @@ public class RocketSyncServer {
 	private static final Pattern VALUE_FIELD = Pattern.compile("\"([a-z]{1,16})\"\\s*:\\s*(-?\\d{1,3})");
 	private static final Pattern KEY_RE = Pattern.compile("^RV(-[A-Z2-9]{4}){3}$");
 	private static final Pattern DEVICE_RE = Pattern.compile("^[a-f0-9]{32}$");
-	private static final Pattern VERSION_RE = Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){1,3}$");
+	private static final Pattern EXTRA_NAME_RE = Pattern.compile("^[\\p{L}0-9 ._+-]{2,40}$");
+	private static final Pattern VERSION_RE =Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){1,3}$");
 	/** Без похожих символов (0/O, 1/I/L), чтобы ключ было легко переписать руками. */
 	private static final String KEY_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 	private static final SecureRandom RANDOM = new SecureRandom();
@@ -240,6 +241,10 @@ public class RocketSyncServer {
 			s.execute("CREATE TABLE IF NOT EXISTS rv_sessions ("
 					+ "token VARCHAR(64) PRIMARY KEY, nick_key VARCHAR(32) NOT NULL, created BIGINT NOT NULL)");
 			s.execute("ALTER TABLE rv_keys ADD COLUMN IF NOT EXISTS nick VARCHAR(32)");
+			// другие моды, которые игрок может выбрать в установщике
+			s.execute("CREATE TABLE IF NOT EXISTS rv_extras ("
+					+ "name VARCHAR(64) NOT NULL, version VARCHAR(32) NOT NULL, uploaded BIGINT NOT NULL, notes VARCHAR(2000),"
+					+ " sha256 VARCHAR(64) NOT NULL, size INT NOT NULL, data BYTEA NOT NULL, PRIMARY KEY (name, version))");
 		}
 	}
 
@@ -470,7 +475,23 @@ public class RocketSyncServer {
 						.append(",\"notes\":").append(quote(rs.getString(4))).append('}');
 			}
 		}
-		send(ex, 200, "application/json", json.append('}').toString());
+		// последняя версия каждого дополнительного мода
+		json.append(",\"mods\":[");
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT name, version, sha256, size, notes FROM rv_extras e"
+						+ " WHERE uploaded = (SELECT MAX(uploaded) FROM rv_extras x WHERE x.name = e.name) ORDER BY name");
+		     ResultSet rs = st.executeQuery()) {
+			boolean first = true;
+			while (rs.next()) {
+				json.append(first ? "" : ",").append("{\"name\":").append(quote(rs.getString(1)))
+						.append(",\"version\":").append(quote(rs.getString(2)))
+						.append(",\"sha256\":").append(quote(rs.getString(3)))
+						.append(",\"size\":").append(rs.getInt(4))
+						.append(",\"notes\":").append(quote(rs.getString(5))).append('}');
+				first = false;
+			}
+		}
+		send(ex, 200, "application/json", json.append("]}").toString());
 	}
 
 	private static void download(HttpExchange ex) throws IOException, SQLException {
@@ -484,16 +505,21 @@ public class RocketSyncServer {
 				send(ex, 403, "text/plain", "key is not active");
 				return;
 			}
-			try (PreparedStatement st = c.prepareStatement(
-					"SELECT version, data FROM rv_versions ORDER BY uploaded DESC LIMIT 1");
-			     ResultSet rs = st.executeQuery()) {
+			String mod = q.get("mod");
+			try (PreparedStatement st = c.prepareStatement(mod == null
+					? "SELECT version, data FROM rv_versions ORDER BY uploaded DESC LIMIT 1"
+					: "SELECT version, data FROM rv_extras WHERE name=? ORDER BY uploaded DESC LIMIT 1")) {
+				if (mod != null) {
+					st.setString(1, mod);
+				}
+				ResultSet rs = st.executeQuery();
 				if (!rs.next()) {
 					send(ex, 404, "text/plain", "no versions");
 					return;
 				}
 				byte[] data = rs.getBytes(2);
 				ex.getResponseHeaders().set("Content-Type", "application/java-archive");
-				ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"rocketvisuals-" + rs.getString(1) + ".jar\"");
+				ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"mod-" + rs.getString(1) + ".jar\"");
 				ex.sendResponseHeaders(200, data.length);
 				try (OutputStream out = ex.getResponseBody()) {
 					out.write(data);
@@ -734,6 +760,59 @@ public class RocketSyncServer {
 				}
 				case "POST versions/delete" -> {
 					update(c, "DELETE FROM rv_versions WHERE version=?", form(ex).get("version"));
+					send(ex, 200, "application/json", "{\"ok\":true}");
+				}
+				case "GET extras" -> {
+					StringBuilder json = new StringBuilder("[");
+					try (PreparedStatement st = c.prepareStatement(
+							"SELECT name, version, uploaded, size, notes FROM rv_extras ORDER BY name, uploaded DESC");
+					     ResultSet rs = st.executeQuery()) {
+						while (rs.next()) {
+							json.append(json.length() > 1 ? "," : "")
+									.append("{\"name\":").append(quote(rs.getString(1)))
+									.append(",\"version\":").append(quote(rs.getString(2)))
+									.append(",\"uploaded\":").append(rs.getLong(3))
+									.append(",\"size\":").append(rs.getInt(4))
+									.append(",\"notes\":").append(quote(rs.getString(5))).append('}');
+						}
+					}
+					send(ex, 200, "application/json", json.append(']').toString());
+				}
+				case "POST extras" -> {
+					Map<String, String> q = query(ex);
+					String name = q.getOrDefault("name", "").trim();
+					String version = q.getOrDefault("version", "").trim();
+					if (!EXTRA_NAME_RE.matcher(name).matches()) {
+						send(ex, 400, "application/json", error("Название: 2–40 символов (буквы, цифры, пробел, . _ + -)"));
+						return;
+					}
+					if (!VERSION_RE.matcher(version).matches()) {
+						send(ex, 400, "application/json", error("Версия должна быть вида 1.0.1"));
+						return;
+					}
+					byte[] jar = readBody(ex, MAX_JAR);
+					if (jar == null || jar.length < 4 || jar[0] != 'P' || jar[1] != 'K') {
+						send(ex, 400, "application/json", error("Это не .jar файл (или он больше 30 МБ)"));
+						return;
+					}
+					String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(jar));
+					update(c, "DELETE FROM rv_extras WHERE name=? AND version=?", name, version);
+					try (PreparedStatement st = c.prepareStatement(
+							"INSERT INTO rv_extras (name, version, uploaded, notes, sha256, size, data) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+						st.setString(1, name);
+						st.setString(2, version);
+						st.setLong(3, System.currentTimeMillis());
+						st.setString(4, trimTo(q.getOrDefault("notes", ""), 2000));
+						st.setString(5, sha);
+						st.setInt(6, jar.length);
+						st.setBytes(7, jar);
+						st.executeUpdate();
+					}
+					send(ex, 200, "application/json", "{\"ok\":true}");
+				}
+				case "POST extras/delete" -> {
+					Map<String, String> f = form(ex);
+					update(c, "DELETE FROM rv_extras WHERE name=? AND version=?", f.get("name"), f.get("version"));
 					send(ex, 200, "application/json", "{\"ok\":true}");
 				}
 				default -> send(ex, 404, "application/json", error("not found"));
