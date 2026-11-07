@@ -483,8 +483,10 @@ public class RocketSyncServer {
 				key = findKey(c, code);
 			}
 			if (!device.equals(key.get("device"))) {
-				send(ex, 403, "application/json", error("Ключ уже активирован на другом компьютере"));
-				return;
+				// владелец ключа (тот же аккаунт) на другом устройстве: ключ переезжает, срок прежний,
+				// на старом устройстве мод отключится при следующей проверке — работает только на одном ПК
+				update(c, "UPDATE rv_keys SET device=?, last_seen=? WHERE code=?", device, now, code);
+				key = findKey(c, code);
 			}
 			sendStatus(ex, c, key, now);
 		}
