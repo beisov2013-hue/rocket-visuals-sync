@@ -10,8 +10,17 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
+import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.Signature;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -277,6 +286,69 @@ public class RocketSyncServer {
 			s.execute("CREATE TABLE IF NOT EXISTS rv_sessions ("
 					+ "token VARCHAR(64) PRIMARY KEY, nick_key VARCHAR(32) NOT NULL, created BIGINT NOT NULL)");
 			s.execute("ALTER TABLE rv_keys ADD COLUMN IF NOT EXISTS nick VARCHAR(32)");
+			// Ключи подписи: сервер подписывает срок действия, мод проверяет подпись своим публичным ключом.
+			// Подделать дату в файле на компьютере без приватного ключа (он только здесь) нельзя.
+			s.execute("CREATE TABLE IF NOT EXISTS rv_meta (k VARCHAR(32) PRIMARY KEY, v TEXT NOT NULL)");
+		}
+		loadSigningKeys();
+	}
+
+	// ---------------------------------------------------------------- подпись срока действия (Ed25519)
+
+	private static PrivateKey signPriv;
+	private static String signPubB64 = "";
+
+	/** Берём пару ключей из базы, а если её нет — создаём и сохраняем (навсегда). */
+	private static void loadSigningKeys() {
+		try (Connection c = db()) {
+			String priv = metaGet(c, "sign_priv");
+			String pub = metaGet(c, "sign_pub");
+			if (priv == null || pub == null) {
+				KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+				priv = Base64.getEncoder().encodeToString(pair.getPrivate().getEncoded());
+				pub = Base64.getEncoder().encodeToString(pair.getPublic().getEncoded());
+				metaSet(c, "sign_priv", priv);
+				metaSet(c, "sign_pub", pub);
+				System.out.println("[RV] Созданы ключи подписи");
+			}
+			signPriv = KeyFactory.getInstance("Ed25519")
+					.generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(priv)));
+			signPubB64 = pub;
+		} catch (Exception e) {
+			System.err.println("[RV] Ключи подписи недоступны: " + e);
+		}
+	}
+
+	/** Подпись строки "device|expires" — её мод проверит публичным ключом. */
+	private static String sign(String message) {
+		if (signPriv == null) {
+			return "";
+		}
+		try {
+			Signature s = Signature.getInstance("Ed25519");
+			s.initSign(signPriv);
+			s.update(message.getBytes(StandardCharsets.UTF_8));
+			return Base64.getEncoder().encodeToString(s.sign());
+		} catch (Exception e) {
+			return "";
+		}
+	}
+
+	private static String metaGet(Connection c, String k) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement("SELECT v FROM rv_meta WHERE k=?")) {
+			st.setString(1, k);
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getString(1) : null;
+			}
+		}
+	}
+
+	private static void metaSet(Connection c, String k, String v) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement(
+				"INSERT INTO rv_meta(k,v) VALUES(?,?) ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v")) {
+			st.setString(1, k);
+			st.setString(2, v);
+			st.executeUpdate();
 		}
 	}
 
@@ -516,10 +588,14 @@ public class RocketSyncServer {
 	private static void sendStatus(HttpExchange ex, Connection c, Map<String, Object> key, long now) throws IOException, SQLException {
 		long expires = (Long) key.get("expires");
 		boolean active = !(Boolean) key.get("disabled") && expires > now;
+		String device = (String) key.get("device");
 		StringBuilder json = new StringBuilder("{\"ok\":true,\"active\":").append(active)
 				.append(",\"expires\":").append(expires)
 				.append(",\"now\":").append(now)
-				.append(",\"daysLeft\":").append(Math.max(0, (expires - now + DAY_MS - 1) / DAY_MS));
+				.append(",\"daysLeft\":").append(Math.max(0, (expires - now + DAY_MS - 1) / DAY_MS))
+				// Подпись срока: мод не поверит дате в своём файле, если подпись не сходится
+				.append(",\"sig\":").append(quote(sign((device == null ? "" : device) + "|" + expires)))
+				.append(",\"pub\":").append(quote(signPubB64));
 		if ((Boolean) key.get("disabled")) {
 			json.append(",\"error\":\"Ключ отключён\"");
 		} else if (!active) {
