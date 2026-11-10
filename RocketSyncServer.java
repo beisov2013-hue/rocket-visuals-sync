@@ -125,7 +125,13 @@ public class RocketSyncServer {
 					case "POST /api/activate" -> activate(ex);
 					case "POST /api/check" -> check(ex);
 					case "GET /api/download" -> download(ex);
-					default -> send(ex, 404, "text/plain", "not found");
+					default -> {
+						if (method.equals("POST") && path.startsWith("/api/friends/")) {
+							friends(ex, path.substring("/api/friends/".length()));
+						} else {
+							send(ex, 404, "text/plain", "not found");
+						}
+					}
 				}
 			} else if (method.equals("GET") && path.equals("/admin")) {
 				send(ex, 200, "text/html", adminPage);
@@ -289,6 +295,16 @@ public class RocketSyncServer {
 			// Ключи подписи: сервер подписывает срок действия, мод проверяет подпись своим публичным ключом.
 			// Подделать дату в файле на компьютере без приватного ключа (он только здесь) нельзя.
 			s.execute("CREATE TABLE IF NOT EXISTS rv_meta (k VARCHAR(32) PRIMARY KEY, v TEXT NOT NULL)");
+			// Друзья: a позвал b; accepted — b согласился. Кто в сети и где играл. Предложения скачать конфиг.
+			s.execute("CREATE TABLE IF NOT EXISTS rv_friends ("
+					+ "a VARCHAR(32) NOT NULL, b VARCHAR(32) NOT NULL, accepted BOOLEAN NOT NULL DEFAULT FALSE,"
+					+ " created BIGINT NOT NULL, PRIMARY KEY (a, b))");
+			s.execute("CREATE TABLE IF NOT EXISTS rv_presence ("
+					+ "nick_key VARCHAR(32) PRIMARY KEY, last_seen BIGINT NOT NULL,"
+					+ " last_server VARCHAR(128), server_seen BIGINT)");
+			s.execute("CREATE TABLE IF NOT EXISTS rv_offers ("
+					+ "id VARCHAR(32) PRIMARY KEY, from_key VARCHAR(32) NOT NULL, to_key VARCHAR(32) NOT NULL,"
+					+ " name VARCHAR(64) NOT NULL, data TEXT NOT NULL, created BIGINT NOT NULL)");
 		}
 		loadSigningKeys();
 	}
@@ -945,6 +961,287 @@ public class RocketSyncServer {
 				st.setObject(i + 1, args[i]);
 			}
 			st.executeUpdate();
+		}
+	}
+
+	// ======================== друзья ========================
+
+	private static final int MAX_FRIEND_FORM = 256 * 1024;
+	private static final int MAX_CONFIG = 64 * 1024;
+	private static final int MAX_FRIENDS = 100;
+	private static final int MAX_OFFERS_PER_FRIEND = 5;
+	/** Игрок «в сети», если мод отмечался не дольше этого времени назад (мод пишет раз в 20 секунд). */
+	private static final long ONLINE_MS = 75_000;
+	private static final long OFFER_TTL_MS = 7 * DAY_MS;
+	private static final Pattern SERVER_RE = Pattern.compile("^[A-Za-z0-9._:\\-\\[\\]]{1,128}$");
+	/** Чтобы не писать в базу на каждый запрос: ник → {когда записали, что записали}. */
+	private static final Map<String, long[]> PRESENCE_WRITES = new ConcurrentHashMap<>();
+
+	/**
+	 * Друзья по нику лаунчера. Все запросы — POST с key и device (кто ты — сервер узнаёт по ключу):
+	 *   sync    [server] [hide=1]  → отметиться «в сети» и получить всё: друзья, заявки, предложения конфигов
+	 *   add     nick               → позвать в друзья (если он уже звал тебя — сразу дружба)
+	 *   accept  nick               → принять заявку
+	 *   remove  nick               → удалить из друзей / отклонить / отменить заявку
+	 *   share   to, name, data     → предложить другу скачать конфиг
+	 *   offer   id, do=accept|decline → забрать предложенный конфиг или отказаться
+	 */
+	private static void friends(HttpExchange ex, String action) throws IOException, SQLException {
+		byte[] body = readBody(ex, MAX_FRIEND_FORM);
+		if (body == null) {
+			send(ex, 413, "application/json", error("Слишком большой запрос"));
+			return;
+		}
+		Map<String, String> form = parsePairs(new String(body, StandardCharsets.UTF_8));
+		String code = normalizeKey(form.get("key"));
+		String device = form.getOrDefault("device", "");
+		long now = System.currentTimeMillis();
+		try (Connection c = db()) {
+			Map<String, Object> key = code == null ? null : findKey(c, code);
+			if (key == null || !device.equals(key.get("device")) || (Boolean) key.get("disabled")
+					|| (Long) key.get("expires") <= now || key.get("nick") == null) {
+				send(ex, 403, "application/json", error("Нужен действующий ключ"));
+				return;
+			}
+			String nick = (String) key.get("nick");
+			String me = nick.toLowerCase(Locale.ROOT);
+			String other = form.getOrDefault("nick", form.getOrDefault("to", "")).trim();
+			String them = other.toLowerCase(Locale.ROOT);
+			switch (action) {
+				case "sync" -> {
+					touchPresence(c, me, form.get("server"), "1".equals(form.get("hide")), now);
+					sendFriendState(ex, c, nick, me, now);
+				}
+				case "add" -> {
+					if (!NICK_RE.matcher(other).matches() || !userExists(c, other)) {
+						send(ex, 404, "application/json", error("Игрока с таким ником нет"));
+						return;
+					}
+					if (them.equals(me)) {
+						send(ex, 400, "application/json", error("Себя добавить нельзя"));
+						return;
+					}
+					if (friendRow(c, them, me) != null) {
+						// он уже звал меня — значит, теперь друзья
+						exec(c, "UPDATE rv_friends SET accepted=TRUE WHERE a=? AND b=?", them, me);
+					} else if (friendRow(c, me, them) == null) {
+						if (countFriends(c, me) >= MAX_FRIENDS) {
+							send(ex, 400, "application/json", error("Слишком много друзей"));
+							return;
+						}
+						exec(c, "INSERT INTO rv_friends (a, b, accepted, created) VALUES (?, ?, FALSE, ?)", me, them, now);
+					}
+					sendFriendState(ex, c, nick, me, now);
+				}
+				case "accept" -> {
+					exec(c, "UPDATE rv_friends SET accepted=TRUE WHERE a=? AND b=?", them, me);
+					sendFriendState(ex, c, nick, me, now);
+				}
+				case "remove" -> {
+					exec(c, "DELETE FROM rv_friends WHERE (a=? AND b=?) OR (a=? AND b=?)", me, them, them, me);
+					exec(c, "DELETE FROM rv_offers WHERE (from_key=? AND to_key=?) OR (from_key=? AND to_key=?)", me, them, them, me);
+					sendFriendState(ex, c, nick, me, now);
+				}
+				case "share" -> {
+					if (!areFriends(c, me, them)) {
+						send(ex, 403, "application/json", error("Конфигом можно делиться только с друзьями"));
+						return;
+					}
+					String data = form.getOrDefault("data", "").trim();
+					if (data.length() < 2 || data.length() > MAX_CONFIG || data.charAt(0) != '{') {
+						send(ex, 400, "application/json", error("Конфиг пустой или слишком большой"));
+						return;
+					}
+					String name = trimTo(form.getOrDefault("name", "").replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", ""), 40);
+					if (name.isEmpty()) {
+						name = "config";
+					}
+					exec(c, "DELETE FROM rv_offers WHERE from_key=? AND to_key=? AND name=?", me, them, name);
+					if (count(c, "SELECT COUNT(*) FROM rv_offers WHERE from_key=? AND to_key=?", me, them) >= MAX_OFFERS_PER_FRIEND) {
+						send(ex, 429, "application/json", error("Друг ещё не ответил на прошлые конфиги"));
+						return;
+					}
+					byte[] raw = new byte[16];
+					RANDOM.nextBytes(raw);
+					exec(c, "INSERT INTO rv_offers (id, from_key, to_key, name, data, created) VALUES (?, ?, ?, ?, ?, ?)",
+							HexFormat.of().formatHex(raw), me, them, name, data, now);
+					send(ex, 200, "application/json", "{\"ok\":true,\"name\":" + quote(name) + "}");
+				}
+				case "offer" -> {
+					String id = form.getOrDefault("id", "");
+					String name = null;
+					String data = null;
+					String from = null;
+					try (PreparedStatement st = c.prepareStatement(
+							"SELECT o.name, o.data, u.nick FROM rv_offers o JOIN rv_users u ON u.nick_key = o.from_key"
+									+ " WHERE o.id=? AND o.to_key=?")) {
+						st.setString(1, id);
+						st.setString(2, me);
+						try (ResultSet rs = st.executeQuery()) {
+							if (rs.next()) {
+								name = rs.getString(1);
+								data = rs.getString(2);
+								from = rs.getString(3);
+							}
+						}
+					}
+					if (name == null) {
+						send(ex, 404, "application/json", error("Этого предложения уже нет"));
+						return;
+					}
+					exec(c, "DELETE FROM rv_offers WHERE id=? AND to_key=?", id, me);
+					if ("accept".equals(form.get("do"))) {
+						send(ex, 200, "application/json", "{\"ok\":true,\"name\":" + quote(name) + ",\"from\":" + quote(from)
+								+ ",\"data\":" + quote(data) + "}");
+					} else {
+						send(ex, 200, "application/json", "{\"ok\":true}");
+					}
+				}
+				default -> send(ex, 404, "text/plain", "not found");
+			}
+		}
+	}
+
+	/** Отметка «я в сети» и где играю. server == null — не на сервере (старый адрес остаётся), hide — стереть адрес. */
+	private static void touchPresence(Connection c, String me, String server, boolean hide, long now) throws SQLException {
+		if (server != null) {
+			server = server.trim().toLowerCase(Locale.ROOT);
+			if (!SERVER_RE.matcher(server).matches()) {
+				server = null;
+			}
+		}
+		if (hide) {
+			server = null;
+		}
+		long what = (server == null ? 0 : server.hashCode()) * 2L + (hide ? 1 : 0);
+		long[] last = PRESENCE_WRITES.get(me);
+		if (last != null && now - last[0] < 30_000 && last[1] == what) {
+			return;
+		}
+		PRESENCE_WRITES.put(me, new long[]{now, what});
+		if (PRESENCE_WRITES.size() > 20000) {
+			PRESENCE_WRITES.entrySet().removeIf(e -> now - e.getValue()[0] > ONLINE_MS);
+		}
+		int changed;
+		if (hide) {
+			changed = exec(c, "UPDATE rv_presence SET last_seen=?, last_server=NULL, server_seen=NULL WHERE nick_key=?", now, me);
+		} else if (server != null) {
+			changed = exec(c, "UPDATE rv_presence SET last_seen=?, last_server=?, server_seen=? WHERE nick_key=?", now, server, now, me);
+		} else {
+			changed = exec(c, "UPDATE rv_presence SET last_seen=? WHERE nick_key=?", now, me);
+		}
+		if (changed == 0) {
+			if (server != null) {
+				exec(c, "INSERT INTO rv_presence (nick_key, last_seen, last_server, server_seen) VALUES (?, ?, ?, ?)", me, now, server, now);
+			} else {
+				exec(c, "INSERT INTO rv_presence (nick_key, last_seen) VALUES (?, ?)", me, now);
+			}
+		}
+	}
+
+	/** Всё, что моду нужно показать: друзья (кто в сети, где играл), заявки и предложенные конфиги. */
+	private static void sendFriendState(HttpExchange ex, Connection c, String nick, String me, long now) throws IOException, SQLException {
+		StringBuilder json = new StringBuilder("{\"ok\":true,\"me\":").append(quote(nick)).append(",\"friends\":[");
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT u.nick, p.last_seen, p.last_server, p.server_seen FROM rv_friends f"
+						+ " JOIN rv_users u ON u.nick_key = CASE WHEN f.a=? THEN f.b ELSE f.a END"
+						+ " LEFT JOIN rv_presence p ON p.nick_key = u.nick_key"
+						+ " WHERE f.accepted=TRUE AND (f.a=? OR f.b=?) ORDER BY u.nick_key")) {
+			st.setString(1, me);
+			st.setString(2, me);
+			st.setString(3, me);
+			try (ResultSet rs = st.executeQuery()) {
+				boolean first = true;
+				while (rs.next()) {
+					long seen = rs.getLong(2);
+					String server = rs.getString(3);
+					long serverSeen = rs.getLong(4);
+					boolean online = now - seen < ONLINE_MS;
+					json.append(first ? "" : ",").append("{\"nick\":").append(quote(rs.getString(1)))
+							.append(",\"online\":").append(online)
+							.append(",\"seen\":").append(seen)
+							.append(",\"server\":").append(quote(server))
+							.append(",\"playing\":").append(online && server != null && now - serverSeen < ONLINE_MS)
+							.append(",\"serverSeen\":").append(serverSeen).append('}');
+					first = false;
+				}
+			}
+		}
+		json.append("],\"incoming\":").append(nickList(c,
+				"SELECT u.nick FROM rv_friends f JOIN rv_users u ON u.nick_key = f.a WHERE f.b=? AND f.accepted=FALSE ORDER BY f.created", me));
+		json.append(",\"outgoing\":").append(nickList(c,
+				"SELECT u.nick FROM rv_friends f JOIN rv_users u ON u.nick_key = f.b WHERE f.a=? AND f.accepted=FALSE ORDER BY f.created", me));
+		exec(c, "DELETE FROM rv_offers WHERE to_key=? AND created<?", me, now - OFFER_TTL_MS);
+		json.append(",\"offers\":[");
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT o.id, u.nick, o.name, LENGTH(o.data), o.created FROM rv_offers o"
+						+ " JOIN rv_users u ON u.nick_key = o.from_key WHERE o.to_key=? ORDER BY o.created")) {
+			st.setString(1, me);
+			try (ResultSet rs = st.executeQuery()) {
+				boolean first = true;
+				while (rs.next()) {
+					json.append(first ? "" : ",").append("{\"id\":").append(quote(rs.getString(1)))
+							.append(",\"from\":").append(quote(rs.getString(2)))
+							.append(",\"name\":").append(quote(rs.getString(3)))
+							.append(",\"size\":").append(rs.getInt(4))
+							.append(",\"created\":").append(rs.getLong(5)).append('}');
+					first = false;
+				}
+			}
+		}
+		send(ex, 200, "application/json", json.append("]}").toString());
+	}
+
+	private static String nickList(Connection c, String sql, String me) throws SQLException {
+		StringBuilder json = new StringBuilder("[");
+		try (PreparedStatement st = c.prepareStatement(sql)) {
+			st.setString(1, me);
+			try (ResultSet rs = st.executeQuery()) {
+				while (rs.next()) {
+					json.append(json.length() > 1 ? "," : "").append(quote(rs.getString(1)));
+				}
+			}
+		}
+		return json.append(']').toString();
+	}
+
+	/** Строка «a позвал b»: null — такой нет, иначе принята ли заявка. */
+	private static Boolean friendRow(Connection c, String a, String b) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement("SELECT accepted FROM rv_friends WHERE a=? AND b=?")) {
+			st.setString(1, a);
+			st.setString(2, b);
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getBoolean(1) : null;
+			}
+		}
+	}
+
+	private static boolean areFriends(Connection c, String x, String y) throws SQLException {
+		return Boolean.TRUE.equals(friendRow(c, x, y)) || Boolean.TRUE.equals(friendRow(c, y, x));
+	}
+
+	private static int countFriends(Connection c, String me) throws SQLException {
+		return count(c, "SELECT COUNT(*) FROM rv_friends WHERE a=? OR b=?", me, me);
+	}
+
+	private static int count(Connection c, String sql, Object... args) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement(sql)) {
+			for (int i = 0; i < args.length; i++) {
+				st.setObject(i + 1, args[i]);
+			}
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getInt(1) : 0;
+			}
+		}
+	}
+
+	/** Как update, но говорит, сколько строк изменилось. */
+	private static int exec(Connection c, String sql, Object... args) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement(sql)) {
+			for (int i = 0; i < args.length; i++) {
+				st.setObject(i + 1, args[i]);
+			}
+			return st.executeUpdate();
 		}
 	}
 
