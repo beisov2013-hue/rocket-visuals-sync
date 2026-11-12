@@ -305,6 +305,12 @@ public class RocketSyncServer {
 			s.execute("CREATE TABLE IF NOT EXISTS rv_offers ("
 					+ "id VARCHAR(32) PRIMARY KEY, from_key VARCHAR(32) NOT NULL, to_key VARCHAR(32) NOT NULL,"
 					+ " name VARCHAR(64) NOT NULL, data TEXT NOT NULL, created BIGINT NOT NULL)");
+			// Чат между друзьями: seen — получатель уже открыл переписку
+			s.execute("CREATE TABLE IF NOT EXISTS rv_messages ("
+					+ "id VARCHAR(32) PRIMARY KEY, from_key VARCHAR(32) NOT NULL, to_key VARCHAR(32) NOT NULL,"
+					+ " text VARCHAR(400) NOT NULL, created BIGINT NOT NULL, seen BOOLEAN NOT NULL DEFAULT FALSE)");
+			s.execute("CREATE INDEX IF NOT EXISTS rv_messages_to ON rv_messages (to_key, seen)");
+			s.execute("CREATE INDEX IF NOT EXISTS rv_messages_pair ON rv_messages (from_key, to_key, created)");
 		}
 		loadSigningKeys();
 	}
@@ -974,6 +980,13 @@ public class RocketSyncServer {
 	private static final long ONLINE_MS = 75_000;
 	private static final long OFFER_TTL_MS = 7 * DAY_MS;
 	private static final Pattern SERVER_RE = Pattern.compile("^[A-Za-z0-9._:\\-\\[\\]]{1,128}$");
+	/** Чат: длина сообщения, сколько хранить на пару друзей, сколько дней, сколько отдавать за раз. */
+	private static final int MAX_MESSAGE = 200;
+	private static final int KEEP_MESSAGES = 300;
+	private static final long MESSAGE_TTL_MS = 30 * DAY_MS;
+	private static final int CHAT_PAGE = 60;
+	/** Не чаще 8 сообщений за 10 секунд с одного ника: ник → {начало окна, сколько отправил}. */
+	private static final Map<String, long[]> MESSAGE_RATE = new ConcurrentHashMap<>();
 	/** Чтобы не писать в базу на каждый запрос: ник → {когда записали, что записали}. */
 	private static final Map<String, long[]> PRESENCE_WRITES = new ConcurrentHashMap<>();
 
@@ -985,6 +998,8 @@ public class RocketSyncServer {
 	 *   remove  nick               → удалить из друзей / отклонить / отменить заявку
 	 *   share   to, name, data     → предложить другу скачать конфиг
 	 *   offer   id, do=accept|decline → забрать предложенный конфиг или отказаться
+	 *   send    to, text           → написать другу в чат (в ответ — переписка)
+	 *   chat    nick               → переписка с другом (последние сообщения); его сообщения становятся прочитанными
 	 */
 	private static void friends(HttpExchange ex, String action) throws IOException, SQLException {
 		byte[] body = readBody(ex, MAX_FRIEND_FORM);
@@ -1040,7 +1055,40 @@ public class RocketSyncServer {
 				case "remove" -> {
 					exec(c, "DELETE FROM rv_friends WHERE (a=? AND b=?) OR (a=? AND b=?)", me, them, them, me);
 					exec(c, "DELETE FROM rv_offers WHERE (from_key=? AND to_key=?) OR (from_key=? AND to_key=?)", me, them, them, me);
+					exec(c, "DELETE FROM rv_messages WHERE (from_key=? AND to_key=?) OR (from_key=? AND to_key=?)", me, them, them, me);
 					sendFriendState(ex, c, nick, me, now);
+				}
+				case "send" -> {
+					if (!areFriends(c, me, them)) {
+						send(ex, 403, "application/json", error("Писать можно только друзьям"));
+						return;
+					}
+					String text = form.getOrDefault("text", "").replaceAll("\\p{Cntrl}", " ").trim();
+					if (text.isEmpty()) {
+						send(ex, 400, "application/json", error("Пустое сообщение"));
+						return;
+					}
+					if (text.codePointCount(0, text.length()) > MAX_MESSAGE) {
+						text = text.substring(0, text.offsetByCodePoints(0, MAX_MESSAGE));
+					}
+					if (tooManyMessages(me, now)) {
+						send(ex, 429, "application/json", error("Слишком часто — подожди пару секунд"));
+						return;
+					}
+					byte[] raw = new byte[16];
+					RANDOM.nextBytes(raw);
+					exec(c, "INSERT INTO rv_messages (id, from_key, to_key, text, created, seen) VALUES (?, ?, ?, ?, ?, FALSE)",
+							HexFormat.of().formatHex(raw), me, them, text, now);
+					pruneMessages(c, me, them, now);
+					sendChat(ex, c, me, them, now);
+				}
+				case "chat" -> {
+					if (!areFriends(c, me, them)) {
+						send(ex, 403, "application/json", error("Писать можно только друзьям"));
+						return;
+					}
+					exec(c, "UPDATE rv_messages SET seen=TRUE WHERE from_key=? AND to_key=? AND seen=FALSE", them, me);
+					sendChat(ex, c, me, them, now);
 				}
 				case "share" -> {
 					if (!areFriends(c, me, them)) {
@@ -1098,6 +1146,69 @@ public class RocketSyncServer {
 					}
 				}
 				default -> send(ex, 404, "text/plain", "not found");
+			}
+		}
+	}
+
+	/** Переписка двух друзей: последние CHAT_PAGE сообщений, от старых к новым. */
+	private static void sendChat(HttpExchange ex, Connection c, String me, String them, long now) throws IOException, SQLException {
+		java.util.List<String> items = new java.util.ArrayList<>();
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT id, from_key, text, created, seen FROM rv_messages"
+						+ " WHERE ((from_key=? AND to_key=?) OR (from_key=? AND to_key=?)) AND created>=?"
+						+ " ORDER BY created DESC, id DESC LIMIT " + CHAT_PAGE)) {
+			st.setString(1, me);
+			st.setString(2, them);
+			st.setString(3, them);
+			st.setString(4, me);
+			st.setLong(5, now - MESSAGE_TTL_MS);
+			try (ResultSet rs = st.executeQuery()) {
+				while (rs.next()) {
+					items.add("{\"id\":" + quote(rs.getString(1)) + ",\"mine\":" + me.equals(rs.getString(2))
+							+ ",\"text\":" + quote(rs.getString(3)) + ",\"created\":" + rs.getLong(4)
+							+ ",\"seen\":" + rs.getBoolean(5) + "}");
+				}
+			}
+		}
+		java.util.Collections.reverse(items);
+		send(ex, 200, "application/json", "{\"ok\":true,\"nick\":" + quote(nickOf(c, them))
+				+ ",\"messages\":[" + String.join(",", items) + "]}");
+	}
+
+	/** Старые сообщения пары убираем: больше KEEP_MESSAGES или старше MESSAGE_TTL_MS. */
+	private static void pruneMessages(Connection c, String a, String b, long now) throws SQLException {
+		exec(c, "DELETE FROM rv_messages WHERE created<?", now - MESSAGE_TTL_MS);
+		int n = count(c, "SELECT COUNT(*) FROM rv_messages WHERE (from_key=? AND to_key=?) OR (from_key=? AND to_key=?)", a, b, b, a);
+		if (n > KEEP_MESSAGES) {
+			exec(c, "DELETE FROM rv_messages WHERE id IN (SELECT id FROM rv_messages"
+					+ " WHERE (from_key=? AND to_key=?) OR (from_key=? AND to_key=?) ORDER BY created, id LIMIT " + (n - KEEP_MESSAGES) + ")",
+					a, b, b, a);
+		}
+	}
+
+	private static boolean tooManyMessages(String me, long now) {
+		long[] w = MESSAGE_RATE.computeIfAbsent(me, k -> new long[]{now, 0});
+		synchronized (w) {
+			if (now - w[0] > 10_000) {
+				w[0] = now;
+				w[1] = 0;
+			}
+			if (w[1] >= 8) {
+				return true;
+			}
+			w[1]++;
+		}
+		if (MESSAGE_RATE.size() > 20000) {
+			MESSAGE_RATE.entrySet().removeIf(e -> now - e.getValue()[0] > 60_000);
+		}
+		return false;
+	}
+
+	private static String nickOf(Connection c, String nickKey) throws SQLException {
+		try (PreparedStatement st = c.prepareStatement("SELECT nick FROM rv_users WHERE nick_key=?")) {
+			st.setString(1, nickKey);
+			try (ResultSet rs = st.executeQuery()) {
+				return rs.next() ? rs.getString(1) : nickKey;
 			}
 		}
 	}
@@ -1185,6 +1296,23 @@ public class RocketSyncServer {
 							.append(",\"name\":").append(quote(rs.getString(3)))
 							.append(",\"size\":").append(rs.getInt(4))
 							.append(",\"created\":").append(rs.getLong(5)).append('}');
+					first = false;
+				}
+			}
+		}
+		json.append("],\"unread\":[");
+		try (PreparedStatement st = c.prepareStatement(
+				"SELECT m.id, u.nick, m.text, m.created FROM rv_messages m JOIN rv_users u ON u.nick_key = m.from_key"
+						+ " WHERE m.to_key=? AND m.seen=FALSE AND m.created>=? ORDER BY m.created DESC LIMIT 50")) {
+			st.setString(1, me);
+			st.setLong(2, now - MESSAGE_TTL_MS);
+			try (ResultSet rs = st.executeQuery()) {
+				boolean first = true;
+				while (rs.next()) {
+					json.append(first ? "" : ",").append("{\"id\":").append(quote(rs.getString(1)))
+							.append(",\"from\":").append(quote(rs.getString(2)))
+							.append(",\"text\":").append(quote(rs.getString(3)))
+							.append(",\"created\":").append(rs.getLong(4)).append('}');
 					first = false;
 				}
 			}
